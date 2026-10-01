@@ -700,3 +700,21 @@ def test_the_stored_values_are_untouched():
     from app.models import MEMBER_ROLES
 
     assert MEMBER_ROLES == ("owner", "member", "viewer")
+
+
+def test_a_hostile_referer_cannot_turn_a_redirect_into_an_open_redirect(client, session_factory):
+    """`https://host//evil.test` has the path `//evil.test`, and a browser
+    follows that off this site. "Starts with a slash" let it through."""
+    make_login(client, session_factory)
+    with session_factory() as s:
+        mine = s.scalars(select(Portfolio).order_by(Portfolio.id)).first().id
+
+    for referer, expected in (("http://testserver//evil.test/x", "/"),
+                              ("http://testserver/\evil.test", "/"),
+                              ("http://testserver/holdings", "/holdings")):
+        resp = client.post("/portfolio/switch",
+                           data={"portfolio_id": str(mine), "_csrf": csrf(session_factory)},
+                           headers={**HTML, "referer": referer}, follow_redirects=False)
+
+        assert resp.status_code == 303
+        assert resp.headers["location"] == expected, referer
