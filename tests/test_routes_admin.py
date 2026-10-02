@@ -700,3 +700,41 @@ def test_the_stored_values_are_untouched():
     from app.models import MEMBER_ROLES
 
     assert MEMBER_ROLES == ("owner", "member", "viewer")
+
+
+# Every route that sends you back to where you were. Parametrised so one going
+# back to a bare `startswith("/")` check fails here rather than passing quietly.
+REFERER_ROUTES = [
+    pytest.param("/portfolio/switch", "/", id="portfolio-switch"),
+    pytest.param("/refresh", "/", id="refresh"),
+    pytest.param("/profile/recovery/later", "/", id="recovery-later"),
+    pytest.param("/holdings/{instrument_id}/pref", "/holdings", id="instrument-pref"),
+]
+
+
+@pytest.mark.parametrize("path, fallback", REFERER_ROUTES)
+def test_a_hostile_referer_cannot_turn_a_redirect_into_an_open_redirect(
+        client, session_factory, monkeypatch, path, fallback):
+    """`https://host//evil.test` has the path `//evil.test`, and a browser
+    follows that off this site. "Starts with a slash" let it through."""
+    from app import main as main_mod
+
+    monkeypatch.setattr(main_mod, "_run_feed", lambda: True)
+    make_login(client, session_factory)
+    with session_factory() as s:
+        mine = s.scalars(select(Portfolio).order_by(Portfolio.id)).first().id
+        inst = fac.make_instrument(s, "ACME", name="Acme")
+        s.commit()
+        inst_id = inst.id
+
+    for referer, expected in (
+            ("http://testserver//evil.test/x", fallback),
+            (r"http://testserver/\evil.test", fallback),
+            ("https://evil.test", fallback),
+            ("http://testserver/charts", "/charts")):
+        resp = client.post(path.format(instrument_id=inst_id),
+                           data={"portfolio_id": str(mine), "_csrf": csrf(session_factory)},
+                           headers={**HTML, "referer": referer}, follow_redirects=False)
+
+        assert resp.status_code == 303, (path, referer)
+        assert resp.headers["location"] == expected, (path, referer)

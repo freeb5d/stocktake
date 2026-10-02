@@ -2285,11 +2285,7 @@ async def account_recovery_later(request: Request):
         await auth.verify_csrf(request, db)
         ctx.session.codes_banner_hidden = True
         db.flush()
-    # The PATH from the referer, never the whole header: it is client-supplied,
-    # and redirecting to an absolute URL somebody else chose is an open
-    # redirect. Back where they were, or home.
-    back = urllib.parse.urlparse(request.headers.get("referer") or "").path
-    return _redirect(back if back.startswith("/") else "/")
+    return _redirect(_back_to_referer(request))
 
 
 @app.post("/profile/recovery")
@@ -2742,11 +2738,7 @@ async def portfolio_switch(request: Request, portfolio_id: int = Form(...)):
             raise HTTPException(403, "you're not a member of that portfolio")
         ctx.session.active_portfolio_id = portfolio_id
         db.flush()
-        # The PATH from the referer, never the whole header: it is client-supplied,
-    # and redirecting to an absolute URL somebody else chose is an open
-    # redirect. Back where they were, or home.
-    back = urllib.parse.urlparse(request.headers.get("referer") or "").path
-    return _redirect(back if back.startswith("/") else "/")
+    return _redirect(_back_to_referer(request))
 
 
 @app.get("/admin/logs.json")
@@ -3168,6 +3160,18 @@ def _back_label(path: str, fallback: str) -> str:
 _safe_path = navigation.safe_path
 
 
+def _back_to_referer(request: Request, fallback: str = "/") -> str:
+    """Where the request came from, or `fallback`.
+
+    The PATH of the referer, never the whole header: it is client-supplied, and
+    an absolute URL somebody else chose would be an open redirect. The path goes
+    through `safe_path` because a referer of `https://host//evil.test` has the
+    path `//evil.test`, which a browser follows off this site.
+    """
+    path = urllib.parse.urlparse(request.headers.get("referer") or "").path
+    return _safe_path(path, fallback)
+
+
 @app.post("/profile/columns")
 async def save_columns(request: Request):
     """Which holdings columns this person wants.
@@ -3463,11 +3467,7 @@ async def refresh(request: Request):
         _require_write(ctx)
     if not feed_status["running"]:
         asyncio.get_running_loop().run_in_executor(None, _run_feed)
-    # The PATH from the referer, never the whole header: it is client-supplied,
-    # and redirecting to an absolute URL somebody else chose is an open
-    # redirect. Back where they were, or home.
-    back = urllib.parse.urlparse(request.headers.get("referer") or "").path
-    return _redirect(back if back.startswith("/") else "/")
+    return _redirect(_back_to_referer(request))
 
 
 @app.get("/charts", response_class=HTMLResponse)
@@ -5150,7 +5150,7 @@ async def instrument_pref(
         # The Yahoo symbol is catalogue data (shared) — only set when supplied.
         if yahoo_symbol is not None and yahoo_symbol.strip():
             inst.yahoo_symbol = yahoo_symbol.strip()
-        return _redirect(request.headers.get("referer") or "/holdings")
+        return _redirect(_back_to_referer(request, "/holdings"))
 
 
 @app.get("/holding/{ticker}", response_class=HTMLResponse)
