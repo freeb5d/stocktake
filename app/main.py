@@ -3160,8 +3160,8 @@ def _back_label(path: str, fallback: str) -> str:
 _safe_path = navigation.safe_path
 
 
-def _back_to_referer(request: Request) -> str:
-    """Where the request came from, or home.
+def _back_to_referer(request: Request, fallback: str = "/") -> str:
+    """Where the request came from, or `fallback`.
 
     The PATH of the referer, never the whole header: it is client-supplied, and
     an absolute URL somebody else chose would be an open redirect. The path goes
@@ -3169,7 +3169,7 @@ def _back_to_referer(request: Request) -> str:
     path `//evil.test`, which a browser follows off this site.
     """
     path = urllib.parse.urlparse(request.headers.get("referer") or "").path
-    return _safe_path(path, "/")
+    return _safe_path(path, fallback)
 
 
 @app.post("/profile/columns")
@@ -5150,7 +5150,7 @@ async def instrument_pref(
         # The Yahoo symbol is catalogue data (shared) — only set when supplied.
         if yahoo_symbol is not None and yahoo_symbol.strip():
             inst.yahoo_symbol = yahoo_symbol.strip()
-        return _redirect(request.headers.get("referer") or "/holdings")
+        return _redirect(_back_to_referer(request, "/holdings"))
 
 
 @app.get("/holding/{ticker}", response_class=HTMLResponse)
