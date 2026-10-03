@@ -99,7 +99,20 @@ def email_problem(email: str) -> str | None:
     email = (email or "").strip()
     if "@" not in email or "." not in email.split("@")[-1] or len(email) < 6:
         return "Enter a valid email address."
+    if len(email) > User.email.type.length:
+        return "That email address is too long."
     return None
+
+
+def email_fits(email: str) -> bool:
+    """Whether an email can be recorded against a sign-in attempt at all.
+
+    The sign-in and recovery forms take an email from anyone, and write it to
+    `login_attempt` before they know whether the account exists. One longer than
+    the column would be a 500 on Postgres, so those forms refuse it first, with
+    the answer they give for any wrong email.
+    """
+    return len(email) <= LoginAttempt.email.type.length
 
 
 # --------------------------------------------------------------------------- #

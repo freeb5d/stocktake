@@ -252,7 +252,8 @@ class TradeIn(BaseModel):
     brokerage: Decimal = Field(default=Decimal(0), ge=0,
                                lt=money.limit(Trade.brokerage))
     fx_rate: Decimal | None = Field(default=None, gt=0, lt=money.limit(Trade.fx_rate))
-    note: str | None = None
+    # Text is held to its column too: Postgres refuses anything longer.
+    note: str | None = Field(default=None, max_length=Trade.note.type.length)
 
 
 class DividendIn(BaseModel):
@@ -262,7 +263,7 @@ class DividendIn(BaseModel):
     franking_credits: Decimal | None = Field(
         default=None, ge=0, lt=money.limit(Dividend.franking_credits))
     fx_rate: Decimal | None = Field(default=None, gt=0, lt=money.limit(Dividend.fx_rate))
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=Dividend.note.type.length)
 
 
 def _instrument(db, ticker: str) -> Instrument:
