@@ -120,14 +120,15 @@ def test_the_add_instrument_form_refuses_a_malformed_ticker(client, session_fact
 
 def test_the_api_refuses_a_malformed_ticker(client, session_factory):
     from app import auth as auth_mod
-    from app.models import ApiKey, Portfolio
+    from app.models import ApiKey, Portfolio, User
 
     make_login(client, session_factory)
     raw, key_hash, prefix = auth_mod.new_api_key()
     with session_factory() as s:
         portfolio = s.scalars(select(Portfolio)).first()
-        s.add(ApiKey(portfolio_id=portfolio.id, name="k", key_hash=key_hash,
-                     prefix=prefix, scopes="read,write"))
+        owner = s.scalars(select(User)).first()
+        s.add(ApiKey(portfolios=[portfolio], name="k", key_hash=key_hash,
+                     prefix=prefix, scopes="read,write", created_by=owner.id))
         s.commit()
 
     resp = client.post("/api/v1/trades",

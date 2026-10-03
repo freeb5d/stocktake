@@ -1814,38 +1814,54 @@ def account_page(request: Request, saved: str = "", error: str = ""):
     """`saved` names WHAT was saved: the page has two forms and one message
     for both told you your password had changed when you picked a colour."""
     with scoped(request) as (ctx, db):
-        return _render(
-            request,
-            ctx,
-            "account.html",
-            {"saved": saved if saved in ("password", "appearance", "2fa-off", "oidc",
-                                         "session-revoked", "sessions-revoked") else "",
-             # Names the profile control as the active one, the same way a page
-             # names its nav entry.
-             "error": error, "active_nav": "account",
-             "hideable_nav": navigation.hideable_for(ctx, settings),
-             # Passkeys need a secure context, so the page says whether this
-             # connection is one rather than claiming they are unavailable.
-             "secure": auth.is_secure_request(request, settings),
-             # The theme designer: what may be set, what this person has set,
-             # what the built-in value is (shown as the placeholder, so an
-             # empty box still tells you what you would get), and any choice
-             # that will be hard to see.
-             "swatches": theming.SWATCHES,
-             "colors": ctx.user.theme_colors or {},
-             "defaults": theming.DEFAULTS,
-             "color_warnings": theming.warnings(ctx.user.theme_colors),
-             **_twofactor_context(db, ctx.user),
-             **_passkey_context(request, db, ctx.user),
-             "identities": [
-                 {"id": row.id, "issuer": row.issuer,
-                  "created": ensure_utc(row.created_at)}
-                 for row in federation.identities_for(db, ctx.user)
-             ],
-             "oidc_reason": federation.unavailable_reason(settings),
-             **_oidc_context(),
-             **_sessions_context(db, ctx)},
-        )
+        return _render(request, ctx, "account.html",
+                       _account_context(request, ctx, db, saved=saved, error=error))
+
+
+def _account_context(request: Request, ctx, db: DbSession, *, saved: str = "",
+                     error: str = "") -> dict:
+    return {
+        "saved": saved if saved in ("password", "appearance", "2fa-off", "oidc",
+                                    "session-revoked", "sessions-revoked",
+                                    "key-revoked") else "",
+        # Names the profile control as the active one, the same way a page
+        # names its nav entry.
+        "error": error, "active_nav": "account",
+        "hideable_nav": navigation.hideable_for(ctx, settings),
+        # Passkeys need a secure context, so the page says whether this
+        # connection is one rather than claiming they are unavailable.
+        "secure": auth.is_secure_request(request, settings),
+        # The theme designer: what may be set, what this person has set,
+        # what the built-in value is (shown as the placeholder, so an
+        # empty box still tells you what you would get), and any choice
+        # that will be hard to see.
+        "swatches": theming.SWATCHES,
+        "colors": ctx.user.theme_colors or {},
+        "defaults": theming.DEFAULTS,
+        "color_warnings": theming.warnings(ctx.user.theme_colors),
+        **_twofactor_context(db, ctx.user),
+        **_passkey_context(request, db, ctx.user),
+        "identities": [
+            {"id": row.id, "issuer": row.issuer,
+             "created": ensure_utc(row.created_at)}
+            for row in federation.identities_for(db, ctx.user)
+        ],
+        "oidc_reason": federation.unavailable_reason(settings),
+        **_oidc_context(),
+        **_sessions_context(db, ctx),
+        **_keys_context(db, ctx),
+    }
+
+
+def _keys_context(db: DbSession, ctx) -> dict:
+    """This person's API keys, each with what it can do in every portfolio it
+    was given (auth.key_reach). Without the second half, a key that stopped
+    reaching a portfolio when they left it would look fine here while every
+    request it made there failed."""
+    keys = db.scalars(select(ApiKey).where(ApiKey.created_by == ctx.user.id)
+                      .order_by(ApiKey.id.desc())).all()
+    return {"api_keys": [{"key": k, "reach": auth.key_reach(db, k)} for k in keys],
+            "write_roles": WRITE_ROLES}
 
 
 def _describe_agent(ua: str | None) -> str:
@@ -2837,11 +2853,6 @@ def members_page(request: Request, error: str = ""):
             for u in db.scalars(select(User).where(User.is_active.is_(True)).order_by(User.name))
             if u.id not in member_ids
         ]
-        keys = db.scalars(
-            select(ApiKey)
-            .where(ApiKey.portfolio_id == ctx.active_portfolio_id)
-            .order_by(ApiKey.id.desc())
-        ).all()
         return _render(
             request,
             ctx,
@@ -2854,7 +2865,6 @@ def members_page(request: Request, error: str = ""):
                 "active_nav": "admin",
                 "rows": rows,
                 "candidates": candidates,
-                "keys": keys,
                 "roles": MEMBER_ROLES,
                    "role_blurbs": ROLE_BLURBS,
                 "invitations": [
@@ -2867,7 +2877,6 @@ def members_page(request: Request, error: str = ""):
                 "new_invite": _invite_url(request,
                                           request.query_params.get("invite", "")),
                 "error": error,
-                "new_key": request.query_params.get("key", ""),
             },
         )
 
@@ -3089,40 +3098,56 @@ async def members_remove(request: Request, member_id: int,
 
 
 @app.post("/keys/new")
-async def keys_new(request: Request, name: str = Form(...), scopes: str = Form("read")):
-    """Issue an API key. The raw value is shown once, on the next page load."""
+async def keys_new(request: Request, name: str = Form(...), scopes: str = Form("read"),
+                   portfolios: list[int] = Form([])):
+    """Issue an API key for yourself, reaching portfolios you choose from your own.
+
+    Anyone with access may, at any role: a key never does more in a portfolio
+    than its creator can do there now (auth.key_reach), and a viewer can
+    already read and export everything a read key would show.
+
+    The raw value is shown once, in THIS response. It used to travel in a
+    redirect's query string, which put a live key in browser history and in
+    the proxy's access log.
+    """
     with scoped(request) as (ctx, db):
-        _require_owner(ctx)
         await auth.verify_csrf(request, db)
         if scopes not in ("read", "read,write"):
             raise HTTPException(400, "scopes must be 'read' or 'read,write'")
+        mine = {m.portfolio_id for m in ctx.memberships}
+        chosen = sorted(set(portfolios))
+        if not set(chosen) <= mine:
+            raise HTTPException(400, "a key can only reach portfolios you belong to")
+        if not chosen:
+            return _render(request, ctx, "account.html", _account_context(
+                request, ctx, db, error="Choose at least one portfolio for the key."))
         raw, key_hash, prefix = auth.new_api_key()
-        db.add(
-            ApiKey(
-                portfolio_id=ctx.active_portfolio_id,
-                name=name.strip()[:80] or "unnamed",
-                key_hash=key_hash,
-                prefix=prefix,
-                scopes=scopes,
-                created_by=ctx.user.id,
-            )
-        )
+        db.add(ApiKey(
+            name=name.strip()[:80] or "unnamed",
+            key_hash=key_hash,
+            prefix=prefix,
+            scopes=scopes,
+            created_by=ctx.user.id,
+            portfolios=list(db.scalars(select(Portfolio).where(Portfolio.id.in_(chosen)))),
+        ))
         db.flush()
-        log.info("api key %s issued for portfolio %d", prefix, ctx.active_portfolio_id)
-        return _redirect(f"/members?key={raw}")
+        log.info("api key %s issued by user %d for portfolios %s",
+                 prefix, ctx.user.id, chosen)
+        return _render(request, ctx, "account.html",
+                       {**_account_context(request, ctx, db), "new_key": raw})
 
 
 @app.post("/keys/{key_id}/revoke")
 async def keys_revoke(request: Request, key_id: int):
+    """Your own keys only. Somebody else's stops when their access does."""
     with scoped(request) as (ctx, db):
-        _require_owner(ctx)
         await auth.verify_csrf(request, db)
         key = db.get(ApiKey, key_id)
-        if key is None or key.portfolio_id != ctx.active_portfolio_id:
+        if key is None or key.created_by != ctx.user.id:
             raise HTTPException(404, "no such key")
         key.revoked_at = dt.datetime.now(dt.timezone.utc)
         db.flush()
-        return _redirect("/members")
+        return _redirect("/profile?saved=key-revoked#keys")
 
 
 # Only a query string, and only characters a query string is made of. The

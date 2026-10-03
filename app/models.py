@@ -296,8 +296,12 @@ class PortfolioMember(Base):
 
 
 class ApiKey(Base):
-    """Machine access to ONE portfolio, for the other apps in the family
-    (budgeting, retirement planning).
+    """Machine access for the other apps in the family (budgeting, retirement
+    planning), belonging to the PERSON who made it — decisions.md #128.
+
+    It reaches the portfolios chosen when it was made (`ApiKeyPortfolio`),
+    picked from its creator's own, and never does more in one than its creator
+    can do there now: `auth.api_session` checks that on every request.
 
     Same token discipline as sessions: the raw key is shown once at creation and
     only its SHA-256 is stored. `prefix` is the leading public chunk, kept so a
@@ -307,9 +311,6 @@ class ApiKey(Base):
     __tablename__ = "api_key"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    portfolio_id: Mapped[int] = mapped_column(
-        ForeignKey("portfolio.id", ondelete="CASCADE"), index=True
-    )
     name: Mapped[str] = mapped_column(String(80))
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     prefix: Mapped[str] = mapped_column(String(16))
@@ -326,7 +327,8 @@ class ApiKey(Base):
     last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
-    portfolio: Mapped[Portfolio] = relationship()
+    portfolios: Mapped[list[Portfolio]] = relationship(
+        secondary="api_key_portfolio", order_by="Portfolio.name")
 
     @property
     def can_write(self) -> bool:
@@ -335,6 +337,21 @@ class ApiKey(Base):
     @property
     def active(self) -> bool:
         return self.revoked_at is None
+
+
+class ApiKeyPortfolio(Base):
+    """One portfolio a key reaches. Chosen when the key is made, from its
+    creator's own portfolios; whether the creator is STILL a member there is
+    checked at use, not here. Goes with the portfolio, or with the key."""
+
+    __tablename__ = "api_key_portfolio"
+
+    api_key_id: Mapped[int] = mapped_column(
+        ForeignKey("api_key.id", ondelete="CASCADE"), primary_key=True
+    )
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("portfolio.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
 
 
 class UserSession(Base):

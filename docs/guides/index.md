@@ -107,14 +107,15 @@ past. See the [disclaimer](../about/disclaimer.md).
 
 ## Account
 
-Password, appearance (yours alone), two-factor, and **active sessions** — every
+Password, appearance (yours alone), two-factor, **active sessions** — every
 device signed in, when it was last used, and a way to sign out one or all of
-the others.
+the others — and **API keys** for other apps, each reaching the portfolios you
+choose and never doing more than you can.
 
 ## Admin
 
-Users, portfolio members and API keys. Admins can reset a password and clear
-someone's two-factor; portfolio owners manage members and keys.
+Users and portfolio members. Admins can reset a password and clear someone's
+two-factor; portfolio owners manage members.
 
 Roles: **owner** (everything), **member** (record and edit), **viewer** (read
 everything, change nothing).

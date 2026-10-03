@@ -107,6 +107,8 @@ WITHHELD_TABLES: dict[str, str] = {
     "oidc_state": "In-flight sign-in nonces. Credential material.",
     "login_attempt": "Lockout state, and a record of failed sign-ins.",
     "api_key": "The keys themselves. A key cannot enumerate its siblings.",
+    "api_key_portfolio": "Which portfolios each key reaches. A key learns its own "
+                         "through /api/v1/portfolios, never another key's.",
     "portfolio_member": "Who has access. A consumer app has no business with it.",
     "holding_pref": "One member's own view of a holding: DRP flag and a note.",
     "saved_chart": "One member's chart layouts.",
@@ -214,8 +216,8 @@ def test_every_published_column_appears_in_a_live_response(client, session_facto
         s.commit()
         tenancy.bind(s, portfolio.id, user.id)
         ref.build_reference(s)
-        portfolio_id = portfolio.id
-    raw = issue_key(session_factory, portfolio_id)
+        portfolio_id, user_id = portfolio.id, user.id
+    raw = issue_key(session_factory, portfolio_id, created_by=user_id)
 
     seen = set()
     for path in ("/api/v1/portfolio", "/api/v1/holdings", "/api/v1/trades",

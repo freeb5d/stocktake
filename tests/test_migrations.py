@@ -225,3 +225,35 @@ def test_a_residual_of_zero_stays_distinguishable_from_unknown(seeded: Path):
     assert conn.execute(
         "SELECT residual_carried FROM dividend WHERE id = 1").fetchone()[0] == 0
     conn.close()
+
+
+def test_an_existing_key_keeps_its_portfolio_through_0010(tmp_path: Path):
+    """0010 moves a key's one portfolio into a link table, so a key can reach
+    several (decisions.md #128). A key in use before the upgrade must reach
+    exactly what it reached before — and the downgrade must put it back."""
+    path = tmp_path / "keys.db"
+    cfg = _config(path)
+    command.upgrade(cfg, "0009")
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        INSERT INTO user (id, email, name, password_hash, public_id, created_at)
+        VALUES (1, 'a@example.com', 'A', 'x', 'pub-1', '2026-01-01');
+        INSERT INTO portfolio (id, name, created_at) VALUES (1, 'Main', '2026-01-01');
+        INSERT INTO portfolio (id, name, created_at) VALUES (2, 'Other', '2026-01-01');
+        INSERT INTO api_key (id, portfolio_id, name, key_hash, prefix, scopes,
+                             created_by, created_at)
+        VALUES (1, 2, 'budget', 'h1', 'pfk_one', 'read', 1, '2026-01-01');
+    """)
+    conn.commit()
+    conn.close()
+
+    command.upgrade(cfg, "head")
+    conn = sqlite3.connect(path)
+    assert conn.execute(
+        "SELECT api_key_id, portfolio_id FROM api_key_portfolio").fetchall() == [(1, 2)]
+    conn.close()
+
+    command.downgrade(cfg, "0009")
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT id, portfolio_id FROM api_key").fetchall() == [(1, 2)]
+    conn.close()

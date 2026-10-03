@@ -14,7 +14,6 @@ from sqlalchemy import select
 import factories as fac
 from app import auth as auth_mod
 from app.models import (
-    ApiKey,
     HoldingPref,
     Instrument,
     Portfolio,
@@ -395,83 +394,6 @@ def test_a_member_of_another_portfolio_cannot_be_touched(client, session_factory
     assert client.post(f"/members/{their_membership}/remove",
                        data={"_csrf": csrf(session_factory)},
                        headers=HTML).status_code == 404
-
-
-# --------------------------------------------------------------------------- #
-# API keys
-# --------------------------------------------------------------------------- #
-
-def test_a_key_is_shown_once_and_only_its_hash_is_kept(client, session_factory):
-    make_login(client, session_factory)
-
-    resp = client.post("/keys/new", data={"name": "Budget app", "scopes": "read",
-                                          "_csrf": csrf(session_factory)},
-                       headers=HTML, follow_redirects=False)
-
-    raw = resp.headers["location"].split("key=")[1]
-    assert raw.startswith("pfk_")
-    with session_factory() as s:
-        stored = s.scalars(select(ApiKey)).one()
-        assert stored.key_hash == auth_mod.hash_token(raw)
-        assert raw not in stored.key_hash          # the value itself is not kept
-        assert stored.prefix in raw                # …but it stays identifiable
-
-
-def test_an_unknown_scope_is_refused(client, session_factory):
-    make_login(client, session_factory)
-
-    assert client.post("/keys/new", data={"name": "k", "scopes": "admin",
-                                          "_csrf": csrf(session_factory)},
-                       headers=HTML).status_code == 400
-
-
-def test_a_key_can_be_revoked(client, session_factory):
-    make_login(client, session_factory)
-    client.post("/keys/new", data={"name": "k", "scopes": "read",
-                                   "_csrf": csrf(session_factory)}, headers=HTML)
-    with session_factory() as s:
-        key_id = s.scalars(select(ApiKey)).one().id
-
-    client.post(f"/keys/{key_id}/revoke", data={"_csrf": csrf(session_factory)},
-                headers=HTML)
-
-    with session_factory() as s:
-        assert s.get(ApiKey, key_id).revoked_at is not None
-
-
-def test_another_portfolios_key_cannot_be_revoked(client, session_factory):
-    make_login(client, session_factory)
-    with session_factory() as s:
-        stranger = fac.make_user(s, "stranger@example.test")
-        theirs = fac.make_portfolio(s, "Theirs", owner=stranger)
-        s.commit()
-        raw, key_hash, prefix = auth_mod.new_api_key()
-        s.add(ApiKey(portfolio_id=theirs.id, name="theirs", key_hash=key_hash,
-                     prefix=prefix, scopes="read"))
-        s.commit()
-        key_id = s.scalars(select(ApiKey)).one().id
-
-    assert client.post(f"/keys/{key_id}/revoke", data={"_csrf": csrf(session_factory)},
-                       headers=HTML).status_code == 404
-
-
-def test_a_viewer_cannot_issue_keys(client, session_factory):
-    """A key is full access to the portfolio's data, so issuing one is an
-    owner's decision — not something read-only access can do."""
-    with session_factory() as s:
-        viewer = fac.make_user(s, "viewer@example.test",
-                               password_hash=auth_mod.hash_password(PASSWORD))
-        portfolio = fac.make_portfolio(s, "Shared")
-        s.add(PortfolioMember(portfolio_id=portfolio.id, user_id=viewer.id, role="viewer"))
-        s.commit()
-    from test_routes import pre_auth_csrf
-    token = pre_auth_csrf(client)
-    client.post("/login", data={"email": "viewer@example.test", "password": PASSWORD,
-                                "_csrf": token}, headers=HTML)
-
-    assert client.post("/keys/new", data={"name": "k", "scopes": "read",
-                                          "_csrf": csrf(session_factory)},
-                       headers=HTML).status_code == 403
 
 
 # --------------------------------------------------------------------------- #

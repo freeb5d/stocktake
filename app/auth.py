@@ -603,10 +603,71 @@ def load_api_key(db: DbSession, raw: str | None) -> ApiKey | None:
     return row
 
 
+def key_reach(db: DbSession, key: ApiKey) -> list[tuple[Portfolio, str | None]]:
+    """Every portfolio this key was given, each with the role its creator holds
+    there NOW — None if they are no longer a member, or no longer active.
+
+    A key belongs to the person who made it and never does more than they can
+    do today — GHSA-cjcx-g69x-63jq, decisions.md #128. They saw the raw key, so
+    a key that outlived their access would be their access, kept. Checked on
+    every use rather than by revoking keys when someone leaves: that would need
+    remembering at every way access ends (deactivation, removal, a demotion to
+    viewer) and would still miss the next one added.
+    """
+    roles: dict[int, str] = {}
+    if key.created_by is not None:
+        roles = dict(db.execute(
+            select(PortfolioMember.portfolio_id, PortfolioMember.role)
+            .join(User, User.id == PortfolioMember.user_id)
+            .where(PortfolioMember.user_id == key.created_by,
+                   User.is_active.is_(True))
+        ).all())
+    return [(portfolio, roles.get(portfolio.id)) for portfolio in key.portfolios]
+
+
+@dataclass
+class ApiAccess:
+    """What one API request is acting on, and whether it may write there."""
+    key: ApiKey
+    portfolio_id: int | None   # None only where no portfolio is chosen
+    can_write: bool
+
+
+def _chosen_portfolio(request: Request, reach: list[tuple[Portfolio, str | None]]) -> int:
+    """Which of the key's portfolios this request means.
+
+    `?portfolio=<id>`, on every method. Optional while the key was GIVEN only
+    one, whether or not its creator can still reach it — the contract a client
+    is written against must not change shape because somebody's membership did.
+    """
+    given = request.query_params.get("portfolio", "").strip()
+    linked = [portfolio.id for portfolio, _role in reach]
+    if not given:
+        if len(linked) == 1:
+            return linked[0]
+        if not linked:
+            raise HTTPException(403, "this key does not reach any portfolio")
+        raise HTTPException(
+            400, "this key reaches more than one portfolio: say which with "
+                 "?portfolio=<id> (GET /api/v1/portfolios lists them)")
+    if not given.isdigit() or int(given) not in linked:
+        # One answer for "not one of this key's" and "no such portfolio", so a
+        # key cannot be used to learn which ids exist.
+        raise HTTPException(404, "this key does not reach that portfolio")
+    return int(given)
+
+
 @contextmanager
-def api_session(request: Request, write: bool = False) -> Iterator[tuple[ApiKey, DbSession]]:
-    """Session bound to the key's portfolio. 401 without a valid key, 403 when
-    a read-only key attempts a write."""
+def api_session(request: Request, write: bool = False,
+                choose: bool = True) -> Iterator[tuple[ApiAccess, DbSession]]:
+    """A session bound to the portfolio this request means.
+
+    401 without a valid key, or when its creator's account is gone or
+    deactivated — the key is dead everywhere. 403 when its creator is no longer
+    a member of the chosen portfolio, or a write is beyond the key or beyond
+    them. `choose=False` is for the one route that lists portfolios rather
+    than acting in one; its session is bound to none.
+    """
     db = request.app.state.session_factory()
     try:
         key = load_api_key(db, key_from_request(request))
@@ -614,10 +675,31 @@ def api_session(request: Request, write: bool = False) -> Iterator[tuple[ApiKey,
             raise HTTPException(
                 401, "missing or invalid API key (Authorization: Bearer pfk_...)"
             )
-        if write and not key.can_write:
-            raise HTTPException(403, "this key is read-only")
-        tenancy.bind(db, key.portfolio_id, key.created_by)
-        yield key, db
+        creator = db.get(User, key.created_by) if key.created_by is not None else None
+        if creator is None or not creator.is_active:
+            raise HTTPException(
+                401, "the person who created this key no longer has an active account, "
+                     "so the key has stopped working"
+            )
+        access = ApiAccess(key=key, portfolio_id=None, can_write=False)
+        if choose:
+            reach = key_reach(db, key)
+            portfolio_id = _chosen_portfolio(request, reach)
+            role = dict((portfolio.id, r) for portfolio, r in reach)[portfolio_id]
+            if role is None:
+                raise HTTPException(
+                    403, "the person who created this key no longer has access to "
+                         "this portfolio")
+            if write and not key.can_write:
+                raise HTTPException(403, "this key is read-only")
+            if write and role not in WRITE_ROLES:
+                raise HTTPException(
+                    403, "the person who created this key can no longer write to this "
+                         "portfolio, so the key is read-only here")
+            tenancy.bind(db, portfolio_id, key.created_by)
+            access = ApiAccess(key=key, portfolio_id=portfolio_id,
+                               can_write=key.can_write and role in WRITE_ROLES)
+        yield access, db
         db.commit()
     except Exception:
         db.rollback()

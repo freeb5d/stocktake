@@ -1081,3 +1081,33 @@ written in exactly one place and always alongside it, so a local session holds
 NULL and cannot match; the clause was there first, was unreachable, and a guard
 no test can fail implies a threat that does not exist. The `sub` path does
 filter on it, and that one is load-bearing.
+
+**128. An API key is its creator's, and does no more than they can now.**
+GHSA-cjcx-g69x-63jq, from freeb5d. Deactivating someone or removing them from a
+portfolio ended their sessions and left their keys working. The reporter asked
+which model was meant: keys owned by the portfolio, or by the person who made
+them. The person: they saw the raw key when it was issued, so a key that
+outlives their access is their access, kept. Calling it the portfolio's does
+not change who holds the secret.
+
+So keys live on the profile page, not the Members page, and anyone with access
+can make one — a viewer's key reads what the viewer can already read and
+export. A key reaches the portfolios chosen when it is made, picked from the
+creator's own (`api_key_portfolio`). One given more than one is told which on
+every request with `?portfolio=<id>`; `/api/v1/portfolios` lists them.
+Whether that parameter is required depends on how many the key was GIVEN, not
+how many it can still reach, so a client's contract does not change shape
+because somebody's membership did. An id the key was not given is a 404,
+answered the same as one that does not exist.
+
+Checked on every use (`auth.key_reach`, `auth.api_session`), not done by
+revoking keys when someone leaves. Revoking would have to be remembered at
+every way access ends (deactivation, removal, demotion to viewer) and would
+miss the next one added. A creator who is deactivated or gone makes the key a
+401 everywhere; one who left a portfolio makes it a 403 there and nowhere
+else; one who became a viewer makes a write key read only there. It runs the
+other way too: restore the access and the key works again, because nothing was
+revoked. The profile page says, per portfolio, where a key has stopped or been
+limited. The raw key is shown once in the response that made it — it used to
+travel in a redirect's query string, and so in browser history and the proxy's
+log.

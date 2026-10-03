@@ -28,14 +28,23 @@ READ_ENDPOINTS = ["/api/v1/portfolio", "/api/v1/holdings", "/api/v1/trades",
 # Helpers
 # --------------------------------------------------------------------------- #
 
-def issue_key(session_factory, portfolio_id: int, *, scopes: str = "read",
-              created_by: int | None = None, revoked: bool = False) -> str:
-    """Mint a key the way the Members page does, and hand back the raw value.
-    Only its hash is ever stored, so this is the one moment it exists."""
+def issue_key(session_factory, portfolio_id: int | list[int], *, created_by: int | None,
+              scopes: str = "read", revoked: bool = False) -> str:
+    """Mint a key the way the profile page does, and hand back the raw value.
+    Only its hash is ever stored, so this is the one moment it exists.
+
+    `portfolio_id` is one portfolio or several. `created_by` has no default: a
+    key works only while the person who made it still has access
+    (auth.key_reach), so a test has to say who that is — None is a key nobody
+    vouches for, and it is refused."""
+    from app.models import Portfolio
+
+    ids = portfolio_id if isinstance(portfolio_id, list) else [portfolio_id]
     raw, key_hash, prefix = auth_mod.new_api_key()
     with session_factory() as s:
-        key = ApiKey(portfolio_id=portfolio_id, name="test key", key_hash=key_hash,
-                     prefix=prefix, scopes=scopes, created_by=created_by)
+        key = ApiKey(name="test key", key_hash=key_hash, prefix=prefix, scopes=scopes,
+                     created_by=created_by,
+                     portfolios=[s.get(Portfolio, pid) for pid in ids])
         if revoked:
             import datetime as dt
             key.revoked_at = dt.datetime.now(dt.timezone.utc)
@@ -96,6 +105,234 @@ def test_a_revoked_key_stops_working(client, session_factory, furnished):
     raw = issue_key(session_factory, portfolio_id, created_by=user_id, revoked=True)
 
     assert client.get("/api/v1/portfolio", headers=bearer(raw)).status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# A key can do no more than its creator can do now — GHSA-cjcx-g69x-63jq.
+# They saw the raw key when it was issued, so a key that outlived their access
+# was their access, kept.
+# --------------------------------------------------------------------------- #
+
+def _set_active(session_factory, user_id: int, active: bool) -> None:
+    from app.models import User
+    with session_factory() as s:
+        s.get(User, user_id).is_active = active
+        s.commit()
+
+
+def _set_role(session_factory, portfolio_id: int, user_id: int, role: str | None) -> None:
+    """Change someone's role, or remove them with None."""
+    from app.models import PortfolioMember
+    with session_factory() as s:
+        member = s.scalars(select(PortfolioMember).where(
+            PortfolioMember.portfolio_id == portfolio_id,
+            PortfolioMember.user_id == user_id)).one()
+        if role is None:
+            s.delete(member)
+        else:
+            member.role = role
+        s.commit()
+
+
+def test_a_key_stops_when_its_creator_is_deactivated(client, session_factory, furnished):
+    portfolio_id, user_id = furnished
+    raw = issue_key(session_factory, portfolio_id, created_by=user_id)
+    assert client.get("/api/v1/portfolio", headers=bearer(raw)).status_code == 200
+
+    _set_active(session_factory, user_id, False)
+    stopped = client.get("/api/v1/portfolio", headers=bearer(raw))
+
+    assert stopped.status_code == 401
+    assert "no longer has an active account" in stopped.json()["detail"]
+
+
+def test_reactivating_the_creator_brings_their_keys_back(client, session_factory, furnished):
+    """Nothing was revoked: the key follows its creator's access, both ways."""
+    portfolio_id, user_id = furnished
+    raw = issue_key(session_factory, portfolio_id, created_by=user_id)
+    _set_active(session_factory, user_id, False)
+
+    _set_active(session_factory, user_id, True)
+
+    assert client.get("/api/v1/portfolio", headers=bearer(raw)).status_code == 200
+
+
+def test_a_key_stops_when_its_creator_leaves_the_portfolio(client, session_factory, furnished):
+    """Removed from this portfolio, still an active account, and still an owner
+    of a portfolio of their own — membership HERE is what counts. The other
+    owner's key is untouched."""
+    portfolio_id, owner_id = furnished
+    with session_factory() as s:
+        from app.models import Portfolio
+        second = fac.make_user(s, "second@example.test")
+        fac.add_member(s, s.get(Portfolio, portfolio_id), second, role="owner")
+        fac.make_portfolio(s, "Their own", owner=second)
+        s.commit()
+        second_id = second.id
+    theirs = issue_key(session_factory, portfolio_id, created_by=second_id)
+    mine = issue_key(session_factory, portfolio_id, created_by=owner_id)
+
+    _set_role(session_factory, portfolio_id, second_id, None)
+    refused = client.get("/api/v1/portfolio", headers=bearer(theirs))
+
+    # 403, not 401: the key itself is fine and still reaches whatever else its
+    # creator belongs to — just not this one.
+    assert refused.status_code == 403
+    assert "no longer has access" in refused.json()["detail"]
+    assert client.get("/api/v1/portfolio", headers=bearer(mine)).status_code == 200
+
+
+def test_a_write_key_reads_only_once_its_creator_cannot_write(
+        client, session_factory, furnished):
+    portfolio_id, user_id = furnished
+    raw = issue_key(session_factory, portfolio_id, scopes="read,write", created_by=user_id)
+
+    _set_role(session_factory, portfolio_id, user_id, "viewer")
+    refused = client.post("/api/v1/trades", headers=bearer(raw),
+                          json={"ticker": "ALPHA", "type": "buy", "date": "2026-07-01",
+                                "units": "1", "unit_price": "10.00"})
+
+    assert refused.status_code == 403
+    assert "can no longer write" in refused.json()["detail"]
+    assert client.get("/api/v1/portfolio", headers=bearer(raw)).status_code == 200
+
+
+def test_a_write_key_still_writes_for_a_member(client, session_factory, furnished):
+    """Owner to member is not a loss of write access, so the key keeps it."""
+    portfolio_id, user_id = furnished
+    raw = issue_key(session_factory, portfolio_id, scopes="read,write", created_by=user_id)
+
+    _set_role(session_factory, portfolio_id, user_id, "member")
+    resp = client.post("/api/v1/trades", headers=bearer(raw),
+                       json={"ticker": "ALPHA", "type": "buy", "date": "2026-07-01",
+                             "units": "1", "unit_price": "10.00"})
+
+    assert resp.status_code == 201, resp.text
+
+
+def test_a_key_nobody_made_is_refused(client, session_factory, furnished):
+    """`created_by` is SET NULL if the account is deleted. A key nobody vouches
+    for is not a key anybody should be able to use."""
+    portfolio_id, _user_id = furnished
+    raw = issue_key(session_factory, portfolio_id, created_by=None)
+
+    assert client.get("/api/v1/portfolio", headers=bearer(raw)).status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# A key reaching several portfolios names one per request — decisions.md #128
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def two(session_factory, furnished):
+    """The furnished portfolio and a second, empty one, both owned by the same
+    person. Returns (first_id, second_id, user_id)."""
+    from app.models import User
+    first, user_id = furnished
+    with session_factory() as s:
+        second = fac.make_portfolio(s, "Second", owner=s.get(User, user_id)).id
+        s.commit()
+    return first, second, user_id
+
+
+def test_a_key_reaching_two_portfolios_must_say_which(client, session_factory, two):
+    first, second, user_id = two
+    raw = issue_key(session_factory, [first, second], created_by=user_id)
+
+    resp = client.get("/api/v1/holdings", headers=bearer(raw))
+
+    assert resp.status_code == 400
+    assert "?portfolio=" in resp.json()["detail"]
+
+
+def test_naming_a_portfolio_chooses_it(client, session_factory, two):
+    first, second, user_id = two
+    raw = issue_key(session_factory, [first, second], created_by=user_id)
+
+    for pid in (first, second):
+        got = client.get(f"/api/v1/portfolio?portfolio={pid}", headers=bearer(raw))
+        assert got.status_code == 200
+        assert got.json()["portfolio"]["id"] == pid
+    # Only the furnished one holds anything — the data really is that portfolio's.
+    assert client.get(f"/api/v1/holdings?portfolio={first}", headers=bearer(raw)).json()
+    assert client.get(f"/api/v1/trades?portfolio={second}",
+                      headers=bearer(raw)).json()["trades"] == []
+
+
+@pytest.mark.parametrize("given", ["stranger", "nope", "-1"])
+def test_a_portfolio_the_key_was_not_given_is_a_404(client, session_factory, two, given):
+    """A real portfolio somebody else owns answers exactly as a made-up id
+    does, so a key cannot be used to learn which ids exist."""
+    first, _second, user_id = two
+    with session_factory() as s:
+        stranger = fac.make_user(s, "stranger@example.test")
+        theirs = fac.make_portfolio(s, "Theirs", owner=stranger).id
+        s.commit()
+    raw = issue_key(session_factory, first, created_by=user_id)
+    value = str(theirs) if given == "stranger" else given
+
+    resp = client.get(f"/api/v1/portfolio?portfolio={value}", headers=bearer(raw))
+
+    assert resp.status_code == 404
+
+
+def test_one_portfolio_lost_leaves_the_others_working(client, session_factory, two):
+    first, second, user_id = two
+    raw = issue_key(session_factory, [first, second], created_by=user_id)
+
+    _set_role(session_factory, second, user_id, None)
+
+    assert client.get(f"/api/v1/portfolio?portfolio={second}",
+                      headers=bearer(raw)).status_code == 403
+    assert client.get(f"/api/v1/portfolio?portfolio={first}",
+                      headers=bearer(raw)).status_code == 200
+
+
+def test_a_write_names_its_portfolio_too(client, session_factory, two):
+    first, second, user_id = two
+    raw = issue_key(session_factory, [first, second], scopes="read,write",
+                    created_by=user_id)
+    body = {"ticker": "ALPHA", "type": "buy", "date": "2026-07-01", "units": "1",
+            "unit_price": "10.00"}
+
+    assert client.post("/api/v1/trades", json=body, headers=bearer(raw)).status_code == 400
+    assert client.post(f"/api/v1/trades?portfolio={first}", json=body,
+                       headers=bearer(raw)).status_code == 201
+    with bound(session_factory, second, user_id) as s:
+        assert s.scalars(select(Trade)).all() == [], "the write landed in the other one"
+
+
+def test_the_portfolios_endpoint_lists_what_the_key_reaches_now(client, session_factory, two):
+    """How a client learns the ids. One whose creator lost access is left out;
+    one where they can only read says so."""
+    from app.models import Portfolio, User
+    first, second, user_id = two
+    with session_factory() as s:
+        other = fac.make_user(s, "other@example.test")
+        viewing = fac.make_portfolio(s, "Viewing", owner=other)
+        fac.add_member(s, viewing, s.get(User, user_id), role="viewer")
+        s.commit()
+        viewing_id = viewing.id
+    raw = issue_key(session_factory, [first, second, viewing_id], scopes="read,write",
+                    created_by=user_id)
+    _set_role(session_factory, second, user_id, None)
+
+    listed = client.get("/api/v1/portfolios", headers=bearer(raw)).json()["portfolios"]
+
+    with session_factory() as s:
+        first_name = s.get(Portfolio, first).name
+    assert listed == sorted([
+        {"id": first, "name": first_name, "access": "read,write"},
+        {"id": viewing_id, "name": "Viewing", "access": "read"},
+    ], key=lambda p: p["name"])
+
+
+def test_the_portfolios_endpoint_still_refuses_a_dead_key(client, session_factory, two):
+    first, _second, user_id = two
+    raw = issue_key(session_factory, first, created_by=user_id)
+    _set_active(session_factory, user_id, False)
+
+    assert client.get("/api/v1/portfolios", headers=bearer(raw)).status_code == 401
 
 
 def test_the_x_api_key_header_is_accepted_too(client, session_factory, furnished):

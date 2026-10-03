@@ -20,8 +20,11 @@
 - **Between portfolios**, every query for personal data is filtered
   automatically. A query with no portfolio context raises rather than returning
   everything.
-- **API keys** are stored as hashes, scoped to one portfolio, and read-only
-  unless granted write.
+- **API keys** belong to the person who made them, are stored as hashes, reach
+  only the portfolios chosen for them, and are read-only unless granted write.
+  A key never does more than its creator can do now: deactivate them and their
+  keys stop; remove them from a portfolio and their keys stop reaching it; make
+  them a viewer and a write key reads only there.
 
 ## What it does not protect against, and why
 

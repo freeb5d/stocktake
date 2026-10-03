@@ -97,7 +97,7 @@ def make_api_key(db, portfolio, user, *, scopes="read", revoked_at=None):
     (raw_key, row)."""
     raw, key_hash, prefix = auth.new_api_key()
     row = ApiKey(
-        portfolio_id=portfolio.id,
+        portfolios=[portfolio],
         name="Budget app",
         key_hash=key_hash,
         prefix=prefix,

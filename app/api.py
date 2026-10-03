@@ -1,11 +1,13 @@
-"""/api/v1 — machine access to one portfolio, authenticated by API key.
+"""/api/v1 — machine access to the portfolios a key was given, by API key.
 
 JSON in, JSON out, no cookies and no CSRF: a key is only ever sent
 deliberately, so there is no ambient authority to abuse.
 
-`Authorization: Bearer pfk_...` or `X-API-Key: pfk_...`. A key belongs to
-exactly one portfolio, so nothing here takes a portfolio parameter — the key
-decides what it can see and `tenancy` enforces it.
+`Authorization: Bearer pfk_...` or `X-API-Key: pfk_...`. A key belongs to the
+person who made it and reaches the portfolios it was given, each no further
+than that person can reach it today (decisions.md #128). A key given more than
+one says which with `?portfolio=<id>` on every request; `/portfolios` lists
+them. `auth.api_session` decides, and `tenancy` enforces it.
 
 Amounts are AUD unless a `currency` field says otherwise; dates are ISO-8601.
 
@@ -23,7 +25,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from . import auth, clock, fyreport, plans, queries
-from .models import Dividend, Instrument, Trade, ticker_problem
+from .models import WRITE_ROLES, Dividend, Instrument, Portfolio, Trade, ticker_problem
 from .tenancy import owned
 
 router = APIRouter(prefix="/api/v1", tags=["api"])
@@ -33,15 +35,30 @@ def _num(value: Decimal | None) -> float | None:
     return round(float(value), 6) if value is not None else None
 
 
+@router.get("/portfolios")
+def get_portfolios(request: Request) -> dict:
+    """The portfolios this key reaches now, and what it may do in each — how a
+    client learns the ids to pass as `?portfolio=`. One it was given but whose
+    creator has since lost access is left out, as it would refuse every call."""
+    with auth.api_session(request, choose=False) as (access, db):
+        key = access.key
+        return {"portfolios": [
+            {"id": portfolio.id, "name": portfolio.name,
+             "access": "read,write" if key.can_write and role in WRITE_ROLES else "read"}
+            for portfolio, role in auth.key_reach(db, key) if role is not None
+        ]}
+
+
 @router.get("/portfolio")
 def get_portfolio(request: Request) -> dict:
     """Headline numbers — what a budgeting app wants for a net-worth line."""
-    with auth.api_session(request) as (key, db):
+    with auth.api_session(request) as (access, db):
         holdings = queries.all_holdings(db)
         open_positions, closed = queries.split_positions(holdings)
         totals = queries.totals(open_positions)
         return {
-            "portfolio": {"id": key.portfolio_id, "name": key.portfolio.name},
+            "portfolio": {"id": access.portfolio_id,
+                          "name": db.get(Portfolio, access.portfolio_id).name},
             "as_at": clock.today().isoformat(),
             "currency": "AUD",
             "cost": _num(totals.cost),
@@ -62,7 +79,7 @@ def get_portfolio(request: Request) -> dict:
 
 @router.get("/holdings")
 def get_holdings(request: Request) -> dict:
-    with auth.api_session(request) as (key, db):
+    with auth.api_session(request) as (access, db):
         open_positions, _ = queries.split_positions(queries.all_holdings(db))
         return {
             "holdings": [
@@ -92,7 +109,7 @@ def get_holdings(request: Request) -> dict:
 def get_trades(
     request: Request, since: str | None = None, ticker: str | None = None
 ) -> dict:
-    with auth.api_session(request) as (key, db):
+    with auth.api_session(request) as (access, db):
         stmt = select(Trade).order_by(Trade.date, Trade.id)
         if since:
             try:
@@ -124,7 +141,7 @@ def get_trades(
 
 @router.get("/dividends")
 def get_dividends(request: Request, since: str | None = None) -> dict:
-    with auth.api_session(request) as (key, db):
+    with auth.api_session(request) as (access, db):
         stmt = select(Dividend).order_by(Dividend.date, Dividend.id)
         if since:
             try:
@@ -157,7 +174,7 @@ def get_fy(request: Request, year: int) -> dict:
     """
     if not 2000 <= year <= 2100:
         raise HTTPException(400, "year out of range")
-    with auth.api_session(request) as (key, db):
+    with auth.api_session(request) as (access, db):
         r = fyreport.fy_report(db, year)
         cgt = r["cgt"]
         return {
@@ -192,7 +209,7 @@ def get_fy(request: Request, year: int) -> dict:
 @router.get("/schedule")
 def get_plan(request: Request) -> dict:
     """Upcoming scheduled buys — what a budgeting app needs to reserve cash."""
-    with auth.api_session(request) as (key, db):
+    with auth.api_session(request) as (access, db):
         sched = plans.schedule(db, upcoming=6)
         plan = sched["plan"]
         return {
@@ -258,7 +275,7 @@ def _instrument(db, ticker: str) -> Instrument:
 
 @router.post("/trades", status_code=201)
 def create_trade(request: Request, body: TradeIn) -> dict:
-    with auth.api_session(request, write=True) as (key, db):
+    with auth.api_session(request, write=True) as (access, db):
         inst = _instrument(db, body.ticker)
         if body.date > clock.today():
             raise HTTPException(400, "date is in the future")
@@ -289,7 +306,7 @@ def create_trade(request: Request, body: TradeIn) -> dict:
 
 @router.post("/dividends", status_code=201)
 def create_dividend(request: Request, body: DividendIn) -> dict:
-    with auth.api_session(request, write=True) as (key, db):
+    with auth.api_session(request, write=True) as (access, db):
         inst = _instrument(db, body.ticker)
         existing = db.scalar(
             select(Dividend).where(

@@ -14,6 +14,13 @@
 {% if saved == 'oidc' %}<p class="panel ok">Single sign-on updated.</p>{% endif %}
 {% if saved == 'session-revoked' %}<p class="panel ok">That session has been signed out.</p>{% endif %}
 {% if saved == 'sessions-revoked' %}<p class="panel ok">Signed out everywhere except here.</p>{% endif %}
+{% if saved == 'key-revoked' %}<p class="panel ok">That key has been revoked.</p>{% endif %}
+{% if new_key %}
+<p class="panel ok">
+  New API key — <strong>copy it now, it isn't shown again</strong>:<br>
+  <code class="reveal">{{ new_key }}</code>
+</p>
+{% endif %}
 {% if error == 'password' %}<p class="panel error">That password isn't right.</p>
 {% elif error == 'code' %}<p class="panel error">That code isn't right.</p>
 {% elif error == 'current-session' %}<p class="panel error">That's the session you're using — use Log out instead.</p>
@@ -242,7 +249,77 @@
       {% if m.portfolio_id == auth.active_portfolio_id %}<span class="badge">active</span>{% endif %}</li>
     {% endfor %}
   </ul>
-  <p class="note">Manage people and API keys on the <a href="/members">Sharing</a> page.</p>
+  <p class="note">Manage people on the <a href="/members">Sharing</a> page.</p>
+</section>
+{# Yours, not a portfolio's: a key reaches the portfolios you give it and never
+   does more in one than you can do there now — decisions.md #128. #}
+<section class="narrow" id="keys">
+  <h2>API keys</h2>
+  <p class="note">Let another app read the portfolios you choose, and with write access
+  record trades. Send it as <code>Authorization: Bearer pfk_…</code>.</p>
+  {% if api_keys %}
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Name</th><th>Key</th><th>Reaches</th><th>Access</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+      {% for row in api_keys %}{% set k = row.key %}
+      <tr class="{{ '' if k.active else 'muted' }}">
+        <td>{{ k.name }}</td>
+        <td><code>{{ k.prefix }}…</code></td>
+        <td>{% for portfolio, role in row.reach %}{{ portfolio.name }}
+          {%- if role is none %} <span class="sub">— you no longer have access</span>
+          {%- elif k.can_write and role not in write_roles %} <span class="sub">— read only here</span>{% endif %}
+          {%- if not loop.last %}<br>{% endif %}{% else %}<span class="sub">none</span>{% endfor %}</td>
+        <td>{{ 'read + write' if k.can_write else 'read only' }}</td>
+        <td class="sub">{{ k.last_used_at.strftime('%Y-%m-%d %H:%M') if k.last_used_at else 'never' }}</td>
+        <td class="rowactions">
+          {% if k.active %}
+          <form method="post" action="/keys/{{ k.id }}/revoke">
+            <input type="hidden" name="_csrf" value="{{ auth.session.csrf_token }}">
+            <button class="linkish" type="submit">Revoke</button>
+          </form>
+          {% else %}<span class="sub">revoked</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+  <form class="panel" method="post" action="/keys/new">
+    <input type="hidden" name="_csrf" value="{{ auth.session.csrf_token }}">
+    <label>What's it for <input name="name" placeholder="budgeting app" required></label>
+    <fieldset>
+      <legend>Portfolios it can reach</legend>
+      {% for m in auth.memberships %}
+      <label class="check"><input type="checkbox" name="portfolios" value="{{ m.portfolio_id }}"
+             {% if m.portfolio_id == auth.active_portfolio_id %}checked{% endif %}>
+        {{ m.name }} <span class="sub">{{ role_labels[m.role] }}</span></label>
+      {% endfor %}
+    </fieldset>
+    <label>Access
+      <select name="scopes">
+        <option value="read">Read only</option>
+        <option value="read,write">Read and write</option>
+      </select>
+    </label>
+    <button type="submit">Create key</button>
+  </form>
+  <details class="tableview">
+    <summary>Endpoints</summary>
+    <pre class="note">GET  /api/v1/portfolios       the portfolios this key reaches
+GET  /api/v1/portfolio        totals, day change
+GET  /api/v1/holdings         per-instrument units, value, gain
+GET  /api/v1/trades?since=…   trade history (&amp;ticker=ALPHA)
+GET  /api/v1/dividends?since=…
+GET  /api/v1/fy/2026          FY summary incl. CGT
+GET  /api/v1/schedule         rotation + upcoming buys
+POST /api/v1/trades           {ticker,type,date,units,unit_price,…}   (write)
+POST /api/v1/dividends        {ticker,date,cash_amount,…}             (write)
+
+A key that reaches more than one portfolio names one on every
+request: ?portfolio=&lt;id&gt;</pre>
+  </details>
 </section>
   </div>
 </div>

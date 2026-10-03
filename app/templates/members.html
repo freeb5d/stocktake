@@ -14,13 +14,6 @@ all of them.</p>
 
 {% if error %}<p class="panel error">{{ error }}</p>{% endif %}
 
-{% if new_key %}
-<p class="panel ok">
-  New API key — <strong>copy it now, it isn't shown again</strong>:<br>
-  <code class="reveal">{{ new_key }}</code>
-</p>
-{% endif %}
-
 {% if auth.is_admin %}
 <section class="narrow">
   <h2>This portfolio</h2>
@@ -100,8 +93,8 @@ all of them.</p>
   entered them.</p>
 {% endset -%}
 {%- set delete_tip %}
-  <p class="tipline">Removes its trades, plans, charts and keys. Not
-  recoverable — <a href="/imports-exports">export first</a> if you want a copy.</p>
+  <p class="tipline">Removes its trades, plans and charts, and API keys stop
+  reaching it. Not recoverable — <a href="/imports-exports">export first</a> if you want a copy.</p>
 {% endset -%}
 <dialog id="removedialog">
   <h2>Remove <span id="removename"></span>?</h2>
@@ -216,64 +209,8 @@ all of them.</p>
   {% endif %}
 </section>
 
-{# Two panels that are each half a screen of content — side by side on a
-   desktop, and stacked on a phone by the small-screen rules. #}
-<div class="evenpair">
-<section class="narrow">
-  <h2>API keys</h2>
-  <p class="note">Lets other apps read this portfolio, and with write scope record trades into
-  it. Send it as <code>Authorization: Bearer pfk_…</code>.</p>
-  {% if keys %}
-  <div class="tablewrap">
-  <table>
-    <thead><tr><th>Name</th><th>Key</th><th>Scope</th><th>Last used</th><th></th></tr></thead>
-    <tbody>
-      {% for k in keys %}
-      <tr class="{{ '' if k.active else 'muted' }}">
-        <td>{{ k.name }}</td>
-        <td><code>{{ k.prefix }}…</code></td>
-        <td>{{ 'read + write' if k.can_write else 'read only' }}</td>
-        <td class="sub">{{ k.last_used_at.strftime('%Y-%m-%d %H:%M') if k.last_used_at else 'never' }}</td>
-        <td class="rowactions">
-          {% if k.active %}
-          <form method="post" action="/keys/{{ k.id }}/revoke">
-            <input type="hidden" name="_csrf" value="{{ auth.session.csrf_token }}">
-            <button class="linkish" type="submit">Revoke</button>
-          </form>
-          {% else %}<span class="sub">revoked</span>{% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  {% endif %}
-  <form class="panel" method="post" action="/keys/new">
-    <input type="hidden" name="_csrf" value="{{ auth.session.csrf_token }}">
-    <div class="row">
-      <label>What's it for <input name="name" placeholder="budgeting app" required></label>
-      <label>Access
-        <select name="scopes">
-          <option value="read">Read only</option>
-          <option value="read,write">Read and write</option>
-        </select>
-      </label>
-    </div>
-    <button type="submit">Create key</button>
-  </form>
-  <details class="tableview">
-    <summary>Endpoints</summary>
-    <pre class="note">GET  /api/v1/portfolio        totals, day change
-GET  /api/v1/holdings         per-instrument units, value, gain
-GET  /api/v1/trades?since=…   trade history (&amp;ticker=ALPHA)
-GET  /api/v1/dividends?since=…
-GET  /api/v1/fy/2026          FY summary incl. CGT
-GET  /api/v1/schedule             rotation + upcoming buys
-POST /api/v1/trades           {ticker,type,date,units,unit_price,…}   (write)
-POST /api/v1/dividends        {ticker,date,cash_amount,…}             (write)</pre>
-  </details>
-</section>
 {% endif %}
+
 <section class="narrow" id="new">
   <h2>Start another portfolio</h2>
   <p class="note">A separate set of holdings you own — a family member's, or a trust.</p>
@@ -283,7 +220,6 @@ POST /api/v1/dividends        {ticker,date,cash_amount,…}             (write)<
     <button type="submit">Create portfolio</button>
   </form>
 </section>
-</div>
 
 
 {% endblock %}
