@@ -37,6 +37,7 @@ from . import (
     pagemap,
     statements,
     tenancy,
+    textfield,
 )
 from .models import Dividend, Instrument, Trade, currency_problem
 from .settings import BrokerFormat
@@ -374,6 +375,10 @@ async def statement_commit(
                      f"{_dec(franked_amount, Dividend.cash_amount, 'Franked amount')}")
         if note_extra.strip():
             note += f"; {note_extra.strip()}"
+        try:
+            textfield.fit(note, Dividend.note, "Note")      # the trade's note is the same
+        except textfield.TextError as exc:
+            raise HTTPException(400, str(exc))
 
         reinvest = None
         if units and price:

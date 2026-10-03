@@ -78,6 +78,7 @@ from . import (
     setupwizard,
     sorting,
     tenancy,
+    textfield,
     theming,
     twofactor,
 )
@@ -1081,7 +1082,8 @@ async def setup_account_create(
 ):
     _wizard_step(request, "account")
     await auth.verify_pre_auth_csrf(request)
-    problem = auth.password_problem(password) or auth.email_problem(email)
+    problem = (auth.password_problem(password) or auth.email_problem(email)
+               or textfield.problem(name, User.name, "Name"))
     if problem:
         setupwizard.draft().want_2fa = bool(want_2fa)
         return _wizard_page(request, "account", {
@@ -1522,6 +1524,8 @@ async def login_submit(
             log.info("stale login CSRF from %s — re-issuing the form", ip)
             return _fail("This page had been open a while. Try again.")
 
+        if not auth.email_fits(email_l):
+            return _fail("Invalid email or password.")
         if auth.is_locked(db, email_l, settings):
             return _fail("Too many attempts. Try again shortly.")
         user = db.scalar(select(User).where(User.email == email_l))
@@ -1615,6 +1619,9 @@ async def recover_submit(request: Request, email: str = Form(""), code: str = Fo
         # Throttled. NIST stops requiring this once a look-up secret clears 64
         # bits — ours do — but it is the difference between one wrong guess and
         # an unbounded stream of them, and it already exists.
+        if not auth.email_fits(email_l):
+            return _recover_form(
+                request, "That email and recovery code do not match.")
         if auth.is_locked(db, email_l, settings):
             return _recover_form(request, "Too many attempts. Try again shortly.")
 
@@ -2550,7 +2557,8 @@ async def users_add(
         _require_admin(ctx)
         await auth.verify_csrf(request, db)
         email_l = email.strip().lower()
-        error = auth.email_problem(email_l) or auth.password_problem(password)
+        error = (auth.email_problem(email_l) or auth.password_problem(password)
+                 or textfield.problem(name, User.name, "Name"))
         if not error and db.scalar(select(User).where(User.email == email_l)):
             error = "That email already has an account."
         if error:
@@ -3002,7 +3010,8 @@ async def invite_signup(
     without one, which is what stops a public instance growing accounts.
     """
     await auth.verify_pre_auth_csrf(request)
-    problem = auth.password_problem(password) or auth.email_problem(email)
+    problem = (auth.password_problem(password) or auth.email_problem(email)
+               or textfield.problem(name, User.name, "Name"))
     if problem:
         return _invite_page(request, token, error=problem)
     with anon() as db:
@@ -3868,12 +3877,17 @@ async def plan_save(
                 400, f"unknown ticker(s): {', '.join(sorted(set(unknown)))} — add them first"
             )
 
+        try:
+            plan_name = textfield.fit(name, InvestmentPlan.name, "Name") or "My plan"
+        except textfield.TextError as exc:
+            raise HTTPException(400, str(exc))
+
         plan = plans.active_plan(db)
         if plan is None:
-            plan = tenancy.owned(db, InvestmentPlan(name=name.strip() or "My plan"))
+            plan = tenancy.owned(db, InvestmentPlan(name=plan_name))
             db.add(plan)
             db.flush()
-        plan.name = name.strip() or "My plan"
+        plan.name = plan_name
         plan.interval_days = interval_days
         plan.amount = amount_val
         plan.brokerage = brokerage_val
@@ -4244,6 +4258,10 @@ async def trade_create(
             return _reject("Price can't be negative.")
         if brk < 0 or (fx is not None and fx <= 0):
             return _reject("Brokerage can't be negative and FX must be positive.")
+        try:
+            note_text = textfield.fit(note, Trade.note, "Note")
+        except textfield.TextError as exc:
+            return _reject(f"{exc}.")
         if date > clock.today():
             return _reject("That date is in the future.")
         when = _parse_time(set_time, trade_time)
@@ -4257,9 +4275,12 @@ async def trade_create(
             ticker = new_ticker.strip().upper()
             typed_currency = new_currency.strip().upper()
             problem = (ticker_problem(ticker) or exchange_problem(new_exchange or "ASX")
-                       or (typed_currency and currency_problem(typed_currency)))
+                       or (typed_currency and currency_problem(typed_currency))
+                       or textfield.problem(new_name, Instrument.name, "Name")
+                       or textfield.problem(new_yahoo, Instrument.yahoo_symbol,
+                                            "Yahoo symbol"))
             if problem:
-                return _reject(problem)
+                return _reject(f"{problem}." if problem[-1] not in ".?" else problem)
             if new_asset_class not in ("etf", "share", "crypto"):
                 return _reject("Pick an asset class for the new instrument.")
             exchange = (new_exchange or "ASX").strip().upper()
@@ -4313,7 +4334,7 @@ async def trade_create(
                 # AUD is 1:1; for anything else an unset rate is backfilled from
                 # the stored FX close for that date by the price feed.
                 fx_rate=Decimal(1) if inst.currency == "AUD" else fx,
-                note=note.strip() or None,
+                note=note_text,
             ),
         )
         problem = _breach(db, inst, trade)
@@ -4485,6 +4506,10 @@ async def trade_edit(
             return _reject("Price can't be negative.")
         if brk < 0 or (fx is not None and fx <= 0):
             return _reject("Brokerage can't be negative and FX must be positive.")
+        try:
+            note_text = textfield.fit(note, Trade.note, "Note")
+        except textfield.TextError as exc:
+            return _reject(f"{exc}.")
         if date > clock.today():
             return _reject("That date is in the future.")
         when = _parse_time(set_time, trade_time)
@@ -4519,7 +4544,7 @@ async def trade_edit(
         trade.unit_price = price
         trade.brokerage = brk
         trade.fx_rate = Decimal(1) if inst.currency == "AUD" else fx
-        trade.note = note.strip() or None
+        trade.note = note_text
         _log_change("trade", trade.id, before, _trade_snapshot(trade))
         db.flush()
         return _redirect(f"/holding/{inst.ticker}")
@@ -4812,6 +4837,10 @@ async def dividend_edit(
             return _reject("A distribution has to be more than zero.")
         if franking is not None and franking < 0:
             return _reject("Franking credits can't be negative.")
+        try:
+            note_text = textfield.fit(note, Dividend.note, "Note")
+        except textfield.TextError as exc:
+            return _reject(f"{exc}.")
         if date > clock.today():
             return _reject("That date is in the future.")
 
@@ -4853,7 +4882,7 @@ async def dividend_edit(
         dividend.date = date
         dividend.cash_amount = cash
         dividend.franking_credits = franking
-        dividend.note = note.strip() or None
+        dividend.note = note_text
         if drp is not None:
             drp.date = date
             drp.quantity = qty
@@ -5133,7 +5162,10 @@ async def instruments_add(
         exchange = exchange.strip().upper()
         currency = currency.strip().upper()
         problem = (ticker_problem(ticker) or exchange_problem(exchange)
-                   or (currency and currency_problem(currency)))
+                   or (currency and currency_problem(currency))
+                   or textfield.problem(name, Instrument.name, "Name")
+                   or textfield.problem(yahoo_symbol, Instrument.yahoo_symbol,
+                                        "Yahoo symbol"))
         if problem:
             return _redirect(f"/holdings?error={quote_plus(problem)}")
         if asset_class not in ("etf", "share", "crypto"):
@@ -5192,15 +5224,20 @@ async def instrument_pref(
         inst = db.get(Instrument, instrument_id)
         if inst is None:
             raise HTTPException(404, "no such instrument")
+        try:
+            note_text = textfield.fit(note, HoldingPref.note, "Note")
+            symbol = textfield.fit(yahoo_symbol, Instrument.yahoo_symbol, "Yahoo symbol")
+        except textfield.TextError as exc:
+            raise HTTPException(400, str(exc))
         pref = queries.prefs_by_instrument(db).get(instrument_id)
         if pref is None:
             pref = tenancy.owned(db, HoldingPref(instrument_id=instrument_id))
             db.add(pref)
         pref.drp = bool(drp)
-        pref.note = note.strip() or None
+        pref.note = note_text
         # The Yahoo symbol is catalogue data (shared) — only set when supplied.
-        if yahoo_symbol is not None and yahoo_symbol.strip():
-            inst.yahoo_symbol = yahoo_symbol.strip()
+        if symbol is not None:
+            inst.yahoo_symbol = symbol
         return _redirect(_back_to_referer(request, "/holdings"))
 
 
