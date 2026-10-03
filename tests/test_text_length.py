@@ -297,6 +297,9 @@ def _users(session_factory):
 PEOPLE = [
     pytest.param("name", "n" * 121, "Name: that is 121 characters", id="name"),
     pytest.param("email", LONG_EMAIL, "That email address is too long.", id="email"),
+    # 313 characters before `.lower()`, 613 after: "İ".lower() is two characters.
+    pytest.param("email", "İ" * 300 + "@example.test", "That email address is too long.",
+                 id="email-that-grows-when-lowercased"),
 ]
 
 
@@ -393,3 +396,60 @@ def test_recovery_with_an_email_too_long_to_record_is_refused_like_any_wrong_one
     assert resp.status_code == 200
     assert "That email and recovery code do not match." in resp.text
     assert _attempts(session_factory) == []
+
+
+# --------------------------------------------------------------------------- #
+# A blank name falls back to the email, which can be longer than the name column
+# --------------------------------------------------------------------------- #
+
+LONG_BUT_VALID_EMAIL = "a" * 190 + "@example.test"        # 203 characters, under 320
+
+
+def _only_new_user(session_factory, email):
+    with session_factory() as s:
+        return s.scalars(select(User).where(User.email == email)).one()
+
+
+def test_a_blank_name_with_a_long_email_is_cut_to_fit_for_an_admin_created_account(
+        client, session_factory):
+    """The fallback is a value the app picks, so it is cut rather than refused:
+    the name column holds 120 and an email 320."""
+    make_login(client, session_factory, admin=True)
+
+    client.post("/users/add", headers=HTML,
+                data={"name": "   ", "email": LONG_BUT_VALID_EMAIL,
+                      "password": "a-long-enough-one", "_csrf": session_csrf(session_factory)})
+
+    assert _only_new_user(session_factory, LONG_BUT_VALID_EMAIL).name == (
+        LONG_BUT_VALID_EMAIL[:120])
+
+
+def test_a_blank_name_with_a_long_email_is_cut_to_fit_on_an_invitation(
+        client, session_factory):
+    make_login(client, session_factory)
+    resp = client.post("/members/invite", follow_redirects=False,
+                       data={"_csrf": session_csrf(session_factory), "role": "member"})
+    token = re.search(r"invite=([^&]+)", resp.headers["location"]).group(1)
+    client.post("/logout", data={"_csrf": session_csrf(session_factory)},
+                follow_redirects=False)
+
+    client.post(f"/invite/{token}/signup", headers=HTML, follow_redirects=False,
+                data={"_csrf": pre_auth_csrf(client), "name": "   ",
+                      "email": LONG_BUT_VALID_EMAIL, "password": PASSWORD})
+
+    assert _only_new_user(session_factory, LONG_BUT_VALID_EMAIL).name == (
+        LONG_BUT_VALID_EMAIL[:120])
+
+
+def test_a_blank_name_with_a_long_email_is_cut_to_fit_in_the_setup_wizard(
+        client, session_factory):
+    client.get("/setup", headers=HTML)
+    token = client.cookies.get(auth_mod.PRE_AUTH_CSRF_COOKIE)
+    client.post("/setup", data={"_csrf": token}, headers=HTML, follow_redirects=False)
+
+    client.post("/setup/profile", headers=HTML, follow_redirects=False,
+                data={"name": "   ", "email": LONG_BUT_VALID_EMAIL, "password": PASSWORD,
+                      "_csrf": token})
+
+    assert _only_new_user(session_factory, LONG_BUT_VALID_EMAIL).name == (
+        LONG_BUT_VALID_EMAIL[:120])

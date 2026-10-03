@@ -1096,7 +1096,7 @@ async def setup_account_create(
             raise HTTPException(403, "Setup already completed")
         user = User(
             email=email.strip().lower(),
-            name=name.strip() or email.strip(),
+            name=_name_or_email(name, email),
             password_hash=auth.hash_password(password),
             is_admin=True,  # the bootstrap account manages the others
         )
@@ -2565,7 +2565,7 @@ async def users_add(
             return _render(request, ctx, "users.html", _users_context(db, error=error))
         new_user = User(
             email=email_l,
-            name=name.strip() or email_l,
+            name=_name_or_email(name, email_l),
             password_hash=auth.hash_password(password),
             is_admin=bool(is_admin),
             # They set their own on first login; this one is only a handover.
@@ -3024,7 +3024,7 @@ async def invite_signup(
             return _invite_page(request, token, error=(
                 "That email already has an account. Sign in, then open this "
                 "link again."))
-        user = User(email=email_l, name=name.strip() or email_l,
+        user = User(email=email_l, name=_name_or_email(name, email_l),
                     password_hash=auth.hash_password(password))
         db.add(user)
         db.flush()
@@ -3193,6 +3193,16 @@ def _back_label(path: str, fallback: str) -> str:
 # Both live in `navigation` so the imports router can reach them too; a guard
 # that is copied is a guard that will eventually be copied slightly wrong.
 _safe_path = navigation.safe_path
+
+
+def _name_or_email(name: str, email: str) -> str:
+    """The name somebody typed, or their email when they left it blank.
+
+    The fallback is a value the app picks, not text a person typed, so it is cut
+    to the column (an email holds 320 characters, `User.name` 120). Typed text
+    is refused instead, by `textfield`: decisions.md #131.
+    """
+    return (name.strip() or email.strip())[:User.name.type.length]
 
 
 def _back_to_referer(request: Request, fallback: str = "/") -> str:

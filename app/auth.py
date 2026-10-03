@@ -99,7 +99,9 @@ def email_problem(email: str) -> str | None:
     email = (email or "").strip()
     if "@" not in email or "." not in email.split("@")[-1] or len(email) < 6:
         return "Enter a valid email address."
-    if len(email) > User.email.type.length:
+    # Measured as it will be stored, lowercased: some characters get longer
+    # ("İ".lower() is two), so 300 of them pass before and overflow after.
+    if len(email.lower()) > User.email.type.length:
         return "That email address is too long."
     return None
 
