@@ -10,7 +10,7 @@ per row (see `columns.py`). Why: decisions.md #80.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 # The currency every total is computed in. A constant until T28b makes it a
 # property of the portfolio — see the module docstring.
@@ -65,3 +65,47 @@ def text(value, currency: str | None = None) -> str:
     number = Decimal(value)
     sign = "-" if number < 0 else ""
     return f"{sign}{symbol(currency)}{abs(number):,.2f}"
+
+
+def limit(column) -> Decimal:
+    """The first magnitude a NUMERIC column cannot hold: 10 ** (precision - scale).
+
+    Read from the column so it cannot drift from the schema. `Numeric(20, 8)`
+    holds twelve digits before the point, so 10**12 and up does not fit.
+    """
+    kind = column.type
+    return Decimal(10) ** (kind.precision - kind.scale)
+
+
+class FigureError(ValueError):
+    """A figure that is not a number, or does not fit where it is going.
+
+    A `ValueError`, so a caller that already catches that keeps working; its own
+    type so a form can show this message, which says what is wrong with the
+    figure, instead of the generic one for a bad date.
+    """
+
+
+def parse(text, column, name: str | None = None) -> Decimal:
+    """Text a person typed or a file carried, as a number that fits `column`.
+
+    A bare `Decimal(text)` accepts `NaN` (whose comparisons then raise),
+    `Infinity` (which saves), and `1E+999999` (finite, but SQLite stores a float
+    and reads it back as Infinity while Postgres refuses it with an overflow).
+    This refuses all three with a message naming the field, `name`, and the
+    value. Zero, sign and meaning stay with the caller: it only says whether the
+    figure is a figure and fits.
+    """
+    raw = str(text).strip()
+    label = f"{name}: " if name else ""
+    try:
+        value = Decimal(raw)
+    except InvalidOperation:
+        raise FigureError(f"{label}{raw!r} is not a number") from None
+    if not value.is_finite():
+        raise FigureError(f"{label}{raw!r} is not a number")
+    ceiling = limit(column)
+    if abs(value) >= ceiling:
+        raise FigureError(
+            f"{label}{raw!r} is too large: it has to be under {ceiling:,}")
+    return value
