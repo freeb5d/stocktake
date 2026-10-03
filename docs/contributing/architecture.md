@@ -37,7 +37,7 @@ Two consequences worth internalising:
 | `exports.py` | Every downloadable report. |
 | `plans.py`, `calendarview.py` | The DCA rotation and the month calendar. |
 | `moves.py` | Handing a holding's rows to another portfolio: what has to travel with what. |
-| `money.py` | Rendering an amount so it says which currency it is. |
+| `money.py` | Rendering an amount so it says which currency it is, and reading one in: a figure that is finite and fits its column. |
 
 ### Getting data in
 
@@ -55,6 +55,7 @@ Two consequences worth internalising:
 | --- | --- |
 | `auth.py` | Passwords, sessions, CSRF, lockout. The one choke point (below). |
 | `tenancy.py` | Per-portfolio filtering, applied automatically (below). |
+| `textfield.py` | Typed text held to the length of the column it is going into: refused, never cut. |
 | `twofactor.py`, `recover.py` | TOTP, recovery codes, and getting back in. |
 | `passkeys.py` | WebAuthn: enrolling a passkey, and signing in with one. |
 | `invites.py` | Single-use invitations into one portfolio, at one role. |
