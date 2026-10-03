@@ -17,7 +17,7 @@ import datetime as dt
 import io
 import re
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -229,7 +229,7 @@ def parse_csv(text: str, broker: str, fmt: BrokerFormat) -> ParseResult:
                 )
             except money.FigureError as exc:
                 result.errors.append(f"line {i}: {exc}")
-            except (KeyError, ValueError, InvalidOperation) as exc:
+            except (KeyError, ValueError) as exc:
                 result.errors.append(f"line {i}: {exc!r} in {row}")
         return result
 
@@ -282,7 +282,7 @@ def parse_csv(text: str, broker: str, fmt: BrokerFormat) -> ParseResult:
                 )
             except money.FigureError as exc:
                 result.errors.append(f"line {i}: {exc}")
-            except (ValueError, InvalidOperation) as exc:
+            except ValueError as exc:
                 result.errors.append(f"line {i}: {exc!r} in {row}")
         return result
 

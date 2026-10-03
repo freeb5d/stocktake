@@ -203,3 +203,37 @@ def test_the_message_names_the_field_and_the_value():
 
     assert str(caught.value) == "Units: 'NaN' is not a number"
     assert isinstance(caught.value, ValueError)   # an existing `except ValueError` works
+
+
+def test_a_long_value_is_cut_down_in_the_message():
+    """Forms carry the message in a redirect's query string; a pasted page of
+    text would make that URL too long for the proxy."""
+    from app.models import Trade
+
+    with pytest.raises(money.FigureError) as caught:
+        money.parse("x" * 5000, Trade.quantity, "Units")
+
+    assert str(caught.value) == "Units: '" + "x" * 20 + "…' is not a number"
+    assert len(str(caught.value)) < 60
+
+
+def test_a_short_value_is_quoted_whole():
+    from app.models import Trade
+
+    with pytest.raises(money.FigureError) as caught:
+        money.parse("x" * 20, Trade.quantity)
+
+    assert "…" not in str(caught.value)
+
+
+def test_a_value_that_rounds_up_to_the_limit_is_refused():
+    """Under 10**12 as typed, but the database rounds to eight places, and the
+    result is 10**12, which Postgres refuses with an overflow."""
+    from app.models import Trade
+
+    with pytest.raises(money.FigureError, match="is too large"):
+        money.parse("999999999999.999999999", Trade.quantity)
+    with pytest.raises(money.FigureError, match="is too large"):
+        money.parse("999999999999.999999995", Trade.quantity)   # half rounds up
+    assert money.parse("999999999999.999999994", Trade.quantity)  # rounds down: fits
+    assert money.parse("999999999999.99999999", Trade.quantity)   # exactly the largest
