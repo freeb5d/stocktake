@@ -1151,3 +1151,29 @@ text, and a table cell is markup only when `charts.js` made it so. The second
 half is what protects an install that already stored a bad value. A bad
 broker format already installed is skipped with a warning rather than taking
 the imports page down.
+
+**131. Typed text is refused, never cut; values the app picks are cut to fit.**
+Issue #60. The inputs carry `maxlength`, which a direct POST ignores. SQLite
+stores any length in a `String(n)` column and Postgres refuses with "value too
+long", so the same request was a 500. `textfield.fit` checks the length against
+the column, which it reads from the column so it cannot drift from the schema,
+and refuses, saying how long the text was and how long it may be and none of the
+text: a form carries the message in a query string, and a pasted page would make
+that URL too long for the proxy. A note somebody typed is theirs, and a cut one
+is a sentence they did not write.
+
+The exceptions are values the app chooses itself, where there is nobody to ask:
+"Alex's portfolio", an API key's fallback name, the User-Agent, and a blank name
+that falls back to the email. Those are cut with `[:n]`, because refusing would
+block what the person actually did. Empty text keeps each site's own rule: a
+note becomes `None`, a user's name falls back to their email, a plan's to "My
+plan".
+
+Two details that were found by running it. An email is measured after
+`.lower()`, because that is what is stored and some characters grow ("İ".lower()
+is two characters). And the sign-in and recovery forms refuse an over-long email
+before it reaches `login_attempt`, with the answer they give for any wrong email,
+because anyone can post there and a 500 would be a way to cause errors without
+an account. Adding a text field means `textfield.fit` at the route and a test
+that asserts nothing was saved: SQLite cannot show the failure, and CI's
+Postgres run is where it would.
