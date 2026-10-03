@@ -15,7 +15,7 @@ DEFAULT_TIMEZONE = "Australia/Melbourne"
 
 
 class RateLimitSettings(BaseModel):
-    max_attempts: int = 8       # failures per (email, ip) before lockout
+    max_attempts: int = 8       # failures per account, any address, before lockout
     window_minutes: int = 15
     lockout_minutes: int = 15
 

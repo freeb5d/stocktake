@@ -461,6 +461,28 @@ def test_guessing_codes_is_covered_by_the_lockout(client, session_factory, enrol
     assert "Too many attempts" in resp.text
 
 
+def test_code_guesses_from_many_addresses_still_lock_the_code_step(
+        client, session_factory, enrolled):
+    """GHSA-gqj4-vm54-mp3j. The guesses arrive from a different address each
+    — rotating machines, or a forged X-Forwarded-For — and the right code is
+    still refused once the account has had its allowance."""
+    from app.models import LoginAttempt
+
+    client.cookies.clear()
+    login_password_only(client)
+    with session_factory() as s:
+        email = s.scalars(select(User)).one().email
+        for n in range(8):  # the configured max_attempts
+            s.add(LoginAttempt(email=email, ip=f"192.0.2.{n + 1}", success=False,
+                               created_at=dt.datetime.now(dt.timezone.utc)))
+        s.commit()
+
+    resp = client.post("/login/code", data={"code": code_for(enrolled),
+                                            "_csrf": pre_auth_csrf(client)}, headers=HTML)
+
+    assert "Too many attempts" in resp.text
+
+
 def test_a_user_without_2fa_logs_in_as_before(client, session_factory):
     """The feature is opt-in; nothing changes for anyone who hasn't enabled it."""
     make_login(client, session_factory)

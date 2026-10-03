@@ -264,14 +264,28 @@ def destroy_sessions_for(db: DbSession, user_id: int) -> None:
 # Lockout
 # --------------------------------------------------------------------------- #
 
-def is_locked(db: DbSession, email: str, ip: str, settings: PortfolioSettings) -> bool:
+def is_locked(db: DbSession, email: str, settings: PortfolioSettings) -> bool:
+    """Whether this account has failed too often to try again yet.
+
+    Counted per ACCOUNT, across every source address. It was per (email,
+    address), so that nobody could lock somebody else out from outside — and
+    that meant anyone who could vary the address got a fresh allowance from
+    each one: a spoofed X-Forwarded-For, or simply many machines. At the
+    six-digit code step that is a brute force by someone who already has the
+    password. GHSA-gqj4-vm54-mp3j.
+
+    The cost is accepted deliberately: anybody who knows an email address can
+    keep that account's password and code steps locked by failing on purpose.
+    Passkeys and single sign-on do not pass through here, so they still work
+    while it lasts. The address is still recorded with every attempt; it just
+    no longer decides anything.
+    """
     rl = settings.auth.rate_limit
     window_start = _utcnow() - dt.timedelta(minutes=rl.window_minutes)
     fails = db.scalars(
         select(LoginAttempt.created_at)
         .where(
             LoginAttempt.email == email.lower(),
-            LoginAttempt.ip == ip,
             LoginAttempt.success.is_(False),
             LoginAttempt.created_at >= window_start,
         )
@@ -396,15 +410,33 @@ def client_ip(request: Request) -> str:
     each attempt) and turns it into a weapon (forge somebody else's address and
     lock them out).
 
-    Every reverse proxy APPENDS the peer it received from, so the original
-    client is the leftmost entry.
+    **Read from the right, not the left.** A proxy that appends (nginx's
+    `$proxy_add_x_forwarded_for`, and so Nginx Proxy Manager) adds the peer it
+    received from to whatever the client sent. The leftmost entry is then
+    the client's own claim, and taking it hands back exactly the choice this
+    function exists to remove. Only the entries our own proxies wrote can be
+    believed, so the answer is the first one from the right that is not itself
+    a trusted proxy: the address the outermost trusted proxy saw. That is right
+    for proxies that overwrite the header too, where there is only one entry.
+
+    Repeated header lines are joined first, in order. A client's line comes
+    before the one the proxy adds, and reading only the first would be the
+    leftmost-entry mistake again.
     """
     settings = getattr(getattr(request.app, "state", None), "settings", None)
     trusted = list(settings.auth.trusted_proxies) if settings is not None else []
     peer = request.client.host if request.client else None
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd and peer and _is_trusted(peer, trusted):
-        return fwd.split(",")[0].strip()
+    if peer and _is_trusted(peer, trusted):
+        hops = [hop.strip()
+                for line in request.headers.getlist("x-forwarded-for")
+                for hop in line.split(",") if hop.strip()]
+        for hop in reversed(hops):
+            if not _is_trusted(hop, trusted):
+                return hop
+        # Every hop is one of our own proxies: a request that started inside
+        # the trusted range, such as the proxy's own health check.
+        if hops:
+            return hops[0]
     return peer or "unknown"
 
 

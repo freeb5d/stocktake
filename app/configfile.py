@@ -75,7 +75,7 @@ OPTIONS: tuple[Option, ...] = (
            "Send the session cookie only over HTTPS. Turning this on without TLS "
            "stops anyone signing in."),
     Option(("auth", "rate_limit", "max_attempts"), "Failed sign-ins allowed", "int",
-           "Failures from one email and address before it is locked out.", minimum=1, maximum=100),
+           "Failures on one account, from any address, before it is locked out.", minimum=1, maximum=100),
     Option(("auth", "rate_limit", "window_minutes"), "Counting window (minutes)", "int",
            "How long failures count towards a lockout.",
            minimum=1, maximum=1440),

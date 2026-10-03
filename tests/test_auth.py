@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pytest
 from freezegun import freeze_time
 from sqlalchemy import select
+from starlette.datastructures import Headers
 
 from app import auth
 from app.models import ApiKey, LoginAttempt, User, UserSession
@@ -56,9 +57,12 @@ class FakeRequest:
     def __init__(self, settings=None, cookies=None, headers=None, client_host=None,
                  path="/", scheme="http"):
         self.cookies = dict(cookies or {})
-        # Starlette's headers are case-insensitive; auth.py looks them up in
-        # lower case, so lower-casing the keys here is faithful enough.
-        self.headers = {k.lower(): v for k, v in (headers or {}).items()}
+        # Starlette's own Headers, so lookups are case-insensitive and a header
+        # sent twice can be passed as a list of pairs — `client_ip` reads every
+        # X-Forwarded-For line, which a dict cannot represent.
+        pairs = headers.items() if isinstance(headers, dict) else (headers or [])
+        self.headers = Headers(raw=[(k.lower().encode("latin-1"), v.encode("latin-1"))
+                                    for k, v in pairs])
         self.client = SimpleNamespace(host=client_host) if client_host else None
         self.app = SimpleNamespace(state=SimpleNamespace(settings=settings))
         # `scheme` matters because a session cookie marked Secure is discarded
@@ -373,8 +377,8 @@ def test_destroy_sessions_for_leaves_other_users_logged_in(db, owner, settings):
 
 
 # --------------------------------------------------------------------------- #
-# Lockout — test config: 3 failures per (email, ip) in a 15-minute window,
-# locked for 15 minutes from the most recent failure.
+# Lockout — test config: 3 failures per account in a 15-minute window, from
+# any address, locked for 15 minutes from the most recent failure.
 # --------------------------------------------------------------------------- #
 
 EMAIL = "locked@example.test"
@@ -387,7 +391,7 @@ def test_not_locked_below_the_attempt_threshold(db, settings):
         auth.record_attempt(db, EMAIL, IP, success=False)
 
     # 2 failures < max_attempts 3.
-    assert auth.is_locked(db, EMAIL, IP, settings) is False
+    assert auth.is_locked(db, EMAIL, settings) is False
 
 
 @freeze_time("2026-08-02 09:00:00")
@@ -396,19 +400,19 @@ def test_locked_at_the_attempt_threshold_inside_the_window(db, settings):
         auth.record_attempt(db, EMAIL, IP, success=False)
 
     # 3 failures = max_attempts, and now (09:00) < last failure + 15 min lockout.
-    assert auth.is_locked(db, EMAIL, IP, settings) is True
+    assert auth.is_locked(db, EMAIL, settings) is True
 
 
 def test_failures_older_than_the_window_do_not_count(db, settings):
     with freeze_time("2026-08-02 09:00:00") as clock:
         for _ in range(3):
             auth.record_attempt(db, EMAIL, IP, success=False)
-        assert auth.is_locked(db, EMAIL, IP, settings) is True
+        assert auth.is_locked(db, EMAIL, settings) is True
 
         clock.move_to("2026-08-02 09:16:00")
         # window_minutes 15 → only failures at/after 09:01 count, and there are
         # none, so the count is 0 rather than 3.
-        assert auth.is_locked(db, EMAIL, IP, settings) is False
+        assert auth.is_locked(db, EMAIL, settings) is False
 
 
 def test_lockout_ends_before_the_window_does(db, settings):
@@ -424,22 +428,23 @@ def test_lockout_ends_before_the_window_does(db, settings):
 
         clock.move_to("2026-08-02 09:04:00")
         # Still inside the 5-minute lockout that runs from 09:00.
-        assert auth.is_locked(db, EMAIL, IP, relaxed) is True
+        assert auth.is_locked(db, EMAIL, relaxed) is True
 
         clock.move_to("2026-08-02 09:06:00")
         # All 3 failures still count (60-minute window) but the lockout expired
         # at 09:05, so the door is open again.
-        assert auth.is_locked(db, EMAIL, IP, relaxed) is False
+        assert auth.is_locked(db, EMAIL, relaxed) is False
 
 
 @freeze_time("2026-08-02 09:00:00")
-def test_lockout_does_not_follow_the_email_to_another_ip(db, settings):
-    for _ in range(3):
-        auth.record_attempt(db, EMAIL, IP, success=False)
+def test_failures_from_different_addresses_add_up(db, settings):
+    """GHSA-gqj4-vm54-mp3j. Counted per (email, address), each new address was
+    a fresh allowance — and at the code step, a brute force of the six digits
+    by anyone holding the password and a few machines, or one spoofed header."""
+    for n in range(3):
+        auth.record_attempt(db, EMAIL, f"192.0.2.{10 + n}", success=False)
 
-    # Same account, different source: locking it out here would let anyone lock
-    # a known email out of the house from outside.
-    assert auth.is_locked(db, EMAIL, "192.0.2.10", settings) is False
+    assert auth.is_locked(db, EMAIL, settings) is True
 
 
 @freeze_time("2026-08-02 09:00:00")
@@ -447,7 +452,7 @@ def test_lockout_does_not_follow_the_ip_to_another_email(db, settings):
     for _ in range(3):
         auth.record_attempt(db, EMAIL, IP, success=False)
 
-    assert auth.is_locked(db, "someone-else@example.test", IP, settings) is False
+    assert auth.is_locked(db, "someone-else@example.test", settings) is False
 
 
 @freeze_time("2026-08-02 09:00:00")
@@ -456,7 +461,7 @@ def test_successful_attempts_do_not_count_towards_lockout(db, settings):
         auth.record_attempt(db, EMAIL, IP, success=True)
 
     # Well past max_attempts, but none of them were failures.
-    assert auth.is_locked(db, EMAIL, IP, settings) is False
+    assert auth.is_locked(db, EMAIL, settings) is False
 
 
 @freeze_time("2026-08-02 09:00:00")
@@ -467,7 +472,7 @@ def test_attempts_are_recorded_against_the_lowercased_email(db, settings):
     assert {row.email for row in db.scalars(select(LoginAttempt))} == {EMAIL}
     # ...which is why typing the address in a different case doesn't reset the
     # counter.
-    assert auth.is_locked(db, "LOCKED@EXAMPLE.TEST", IP, settings) is True
+    assert auth.is_locked(db, "LOCKED@EXAMPLE.TEST", settings) is True
 
 
 # --------------------------------------------------------------------------- #
@@ -767,11 +772,11 @@ def proxied(trusted: list[str]):
 
 
 def test_a_forwarded_address_is_believed_from_a_trusted_proxy():
-    """Every reverse proxy APPENDS the peer it received from, so the original
-    client is the leftmost entry and each one after it is infrastructure.
+    """The trusted proxy's own entry is skipped, and the one before it is the
+    client.
 
-    Reading the rightmost instead would key every request on the proxy — and
-    then one attacker could lock out every account at once, since lockout
+    Taking the rightmost entry blindly would key every request on the proxy —
+    and then one attacker could lock out every account at once, since lockout
     counts per address.
     """
     request = FakeRequest(
@@ -781,6 +786,59 @@ def test_a_forwarded_address_is_believed_from_a_trusted_proxy():
     )
 
     assert auth.client_ip(request) == "203.0.113.7"
+
+
+def test_a_client_cannot_choose_its_address_through_an_appending_proxy():
+    """GHSA-gqj4-vm54-mp3j. nginx's `$proxy_add_x_forwarded_for` appends the
+    real peer to whatever the client sent, so the leftmost entry is the
+    client's own claim. Believing it let one client rotate its "address" on
+    every attempt and never trip the lockout."""
+    for claimed in ("192.0.2.1", "192.0.2.2", "not even an address"):
+        request = FakeRequest(
+            settings=proxied(["198.51.100.0/24"]),
+            headers={"X-Forwarded-For": f"{claimed}, 203.0.113.7"},
+            client_host="198.51.100.9",
+        )
+
+        assert auth.client_ip(request) == "203.0.113.7", claimed
+
+
+def test_a_chain_of_trusted_proxies_is_walked_back_to_the_client():
+    """Two proxies, both ours: the outer one appended the client and the inner
+    one appended the outer. The first entry from the right that is not one of
+    ours is the client — not merely the second from the right."""
+    request = FakeRequest(
+        settings=proxied(["198.51.100.0/24"]),
+        headers={"X-Forwarded-For": "192.0.2.1, 203.0.113.7, 198.51.100.20"},
+        client_host="198.51.100.9",
+    )
+
+    assert auth.client_ip(request) == "203.0.113.7"
+
+
+def test_a_second_forwarded_header_line_is_read_too():
+    """A client's own X-Forwarded-For line comes before the one the proxy
+    adds, so reading only the first line is the leftmost-entry mistake again."""
+    request = FakeRequest(
+        settings=proxied(["198.51.100.0/24"]),
+        headers=[("X-Forwarded-For", "192.0.2.1"),
+                 ("X-Forwarded-For", "203.0.113.7")],
+        client_host="198.51.100.9",
+    )
+
+    assert auth.client_ip(request) == "203.0.113.7"
+
+
+def test_a_request_from_inside_the_trusted_range_keeps_its_first_hop():
+    """Every entry is one of ours — the proxy calling the app itself. Nothing
+    in the list was written by an outsider, so the first hop stands."""
+    request = FakeRequest(
+        settings=proxied(["198.51.100.0/24"]),
+        headers={"X-Forwarded-For": "198.51.100.20, 198.51.100.30"},
+        client_host="198.51.100.9",
+    )
+
+    assert auth.client_ip(request) == "198.51.100.20"
 
 
 def test_a_forwarded_address_is_ignored_from_an_untrusted_peer():

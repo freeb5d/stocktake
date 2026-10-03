@@ -1521,7 +1521,7 @@ async def login_submit(
             log.info("stale login CSRF from %s — re-issuing the form", ip)
             return _fail("This page had been open a while. Try again.")
 
-        if auth.is_locked(db, email_l, ip, settings):
+        if auth.is_locked(db, email_l, settings):
             return _fail("Too many attempts. Try again shortly.")
         user = db.scalar(select(User).where(User.email == email_l))
         stored = user.password_hash if user else None
@@ -1614,7 +1614,7 @@ async def recover_submit(request: Request, email: str = Form(""), code: str = Fo
         # Throttled. NIST stops requiring this once a look-up secret clears 64
         # bits — ours do — but it is the difference between one wrong guess and
         # an unbounded stream of them, and it already exists.
-        if auth.is_locked(db, email_l, ip, settings):
+        if auth.is_locked(db, email_l, settings):
             return _recover_form(request, "Too many attempts. Try again shortly.")
 
         user = db.scalar(select(User).where(User.email == email_l))
@@ -1682,7 +1682,7 @@ async def login_code_submit(request: Request, code: str = Form(...)):
         # Lockout covers this stage too. Without it the code is a six-digit
         # secret that can be brute-forced at will by anyone holding a password
         # — which is precisely the situation the second factor exists for.
-        if auth.is_locked(db, user.email, ip, settings):
+        if auth.is_locked(db, user.email, settings):
             return _code_form(request, "Too many attempts. Try again shortly.")
 
         used_recovery = False

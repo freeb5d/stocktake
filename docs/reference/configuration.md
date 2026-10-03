@@ -180,12 +180,16 @@ auth:
   # or CIDR ranges. EMPTY BY DEFAULT, meaning never: anyone can set that
   # header, so trusting it from an arbitrary peer lets a caller choose their
   # own identity — defeating lockout, or forging someone else's to lock THEM
-  # out. Set this to your reverse proxy once there is one in front.
+  # out. Set this to your reverse proxy once there is one in front — the
+  # proxy's own address or range, never the network your browsers are on, or
+  # their claims get believed as if a proxy had written them.
   # trusted_proxies: []
   #   - 10.42.0.0/16
 
-  # Lockout after repeated failures, counted per email address AND source
-  # address together, so one attacker cannot lock everybody out. This covers
+  # Lockout after repeated failures, counted per account from every source
+  # address together, so guesses spread across many machines still add up.
+  # Anyone who knows an account's email can therefore keep it locked by
+  # failing on purpose; passkeys and single sign-on are not affected. This covers
   # the two-factor code stage as well as the password, so a six-digit code
   # cannot be brute-forced by someone who already has the password.
   # rate_limit:

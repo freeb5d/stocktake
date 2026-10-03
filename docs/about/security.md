@@ -12,9 +12,11 @@
   cannot extend, and the stored expiry. A page left open warns you and then
   signs you out.
 - **CSRF** — every state-changing request must echo a session-bound token.
-- **Login lockout** counts failures per email *and* source address together, so
-  one attacker cannot lock everyone out. It covers the two-factor code step as
-  well as the password.
+- **Login lockout** counts failures per account, from every address together,
+  so spreading guesses across many machines gains nothing. It covers the
+  two-factor code step as well as the password. The trade-off: anyone who knows
+  your email address can keep the password sign-in locked by failing on
+  purpose. Passkeys and single sign-on still work while it lasts.
 - **Two-factor authentication** (TOTP) with single-use recovery codes. A
   correct password alone reaches no page at all.
 - **Between portfolios**, every query for personal data is filtered
