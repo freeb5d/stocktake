@@ -178,6 +178,9 @@ class User(Base):
     # tenancy.py). NULL = never enrolled; `totp_enabled_at` set = enforced.
     totp_secret: Mapped[str | None] = mapped_column(String(64))
     totp_enabled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    # The 30-second step of the last code accepted, so no code is accepted
+    # twice (RFC 6238 §5.2) — twofactor.accept_code. Cleared with the secret.
+    totp_last_step: Mapped[int | None] = mapped_column(Integer)
     # Appearance is per person, not per portfolio — two people sharing one
     # portfolio each get their own.
     theme: Mapped[str] = mapped_column(          # auto|light|dark

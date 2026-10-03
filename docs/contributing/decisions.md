@@ -563,14 +563,20 @@ the first save. And `database` and `app_name` are read-only: changing where the
 data lives, or the file's own name, from a web form is a way to lose a
 database.
 
-**79. Four things the second factor gets right that are commonly got wrong.**
+**79. Five things the second factor gets right that are commonly got wrong.**
 The secret is stored as issued, in the clear — encrypting it needs a key in the
 process that reads it, and anyone who can read that column can already read
 every holding (#63). The QR is rendered locally, because the obvious shortcut
 sends the secret to a third party in a URL. One step of clock drift is accepted:
 stricter generates support requests, looser widens replay for no gain. Recovery
 codes are hashed like session tokens and marked used rather than deleted, so a
-replay is distinguishable from a code never issued.
+replay is distinguishable from a code never issued. And no TOTP code is
+accepted twice (RFC 6238 §5.2; GHSA-28h6-x798-2qv5, from freeb5d): the step of
+the last accepted code is kept on the user and only a later one passes. The
+rule is the condition on a single UPDATE rather than a read then a write, so
+two requests racing with one code cannot both get in. The step is cleared with
+the secret.
+
 **80. A currency symbol is part of the value, not decoration.** Templates once
 wrote a literal `$` before `{{ x | money }}`, which produced `$-4.00` and left
 the symbol outside the privacy blur, sharp beside a smudge. Headline numbers

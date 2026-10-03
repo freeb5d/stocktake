@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import io
 import secrets
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from .models import RecoveryCode, User
 
@@ -65,18 +67,59 @@ def provisioning_uri(secret: str, email: str, issuer: str) -> str:
     return _pyotp().TOTP(secret).provisioning_uri(name=email, issuer_name=issuer)
 
 
-def verify_code(secret: str | None, code: str) -> bool:
-    """Whether this six-digit code is currently valid for that secret.
+def matching_step(secret: str | None, code: str) -> int | None:
+    """The time step this six-digit code belongs to, if it is valid now.
+
+    One step of drift either side is accepted. Callers that sign someone in
+    want `accept_code`, which records the answer; this on its own would accept
+    the same code again for as long as it is in the window.
 
     Tolerates spaces (people paste "123 456") and rejects anything falsy
     outright rather than letting pyotp decide what an empty code means.
     """
     if not secret or not code:
-        return False
+        return None
     cleaned = code.replace(" ", "").strip()
     if not cleaned.isdigit():
+        return None
+    totp = _pyotp().TOTP(secret)
+    now = totp.timecode(_utcnow())
+    for step in (now + 1, now, now - 1):
+        if hmac.compare_digest(totp.generate_otp(step), cleaned):
+            return step
+    return None
+
+
+def accept_code(db: DbSession, user: User, code: str) -> bool:
+    """Whether this code proves the user's authenticator — once.
+
+    A code stays valid for about 90 seconds (its own step and one either side),
+    and without a record anybody who saw one used, over a shoulder or through a
+    phishing relay, could use it again in that time. RFC 6238 §5.2: a verifier
+    must not accept a second attempt with the same code. So each accepted step
+    is recorded on the user, and only a later step is accepted after it.
+
+    That rule lives in the UPDATE's condition and nowhere else, rather than in a
+    read and then a write. Two requests carrying the same code at once — a relay
+    racing the person it phished — would both read the old step and both pass.
+    Only one UPDATE can move it forward.
+    """
+    step = matching_step(user.totp_secret, code)
+    if step is None:
         return False
-    return bool(_pyotp().TOTP(secret).verify(cleaned, valid_window=1))
+    moved = db.execute(
+        update(User)
+        .where(User.id == user.id,
+               or_(User.totp_last_step.is_(None), User.totp_last_step < step))
+        .values(totp_last_step=step),
+        execution_options={"synchronize_session": False},
+    )
+    if moved.rowcount != 1:
+        return False
+    # The row is already written; this keeps the loaded object in step with it
+    # without queueing a second UPDATE.
+    set_committed_value(user, "totp_last_step", step)
+    return True
 
 
 def hash_code(raw: str) -> str:
@@ -206,6 +249,9 @@ def begin_enrolment(user: User) -> str:
     """
     if not (user.totp_secret and user.totp_enabled_at is None):
         user.totp_secret = new_secret()
+        # Steps from the old secret say nothing about the new one, and keeping
+        # one would refuse a fresh code that happens to share its step.
+        user.totp_last_step = None
     return user.totp_secret
 
 
@@ -240,4 +286,5 @@ def disable(db: DbSession, user: User) -> None:
     """
     user.totp_secret = None
     user.totp_enabled_at = None
+    user.totp_last_step = None
     db.flush()

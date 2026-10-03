@@ -25,6 +25,7 @@ import re
 
 import pyotp
 import pytest
+from freezegun import freeze_time
 from sqlalchemy import select
 
 import factories as fac
@@ -59,20 +60,20 @@ def enrolled(client, session_factory):
 def test_a_current_code_verifies(pf):
     secret = twofactor.new_secret()
 
-    assert twofactor.verify_code(secret, code_for(secret))
+    assert twofactor.matching_step(secret, code_for(secret)) is not None
 
 
 def test_a_wrong_code_does_not(pf):
     secret = twofactor.new_secret()
 
-    assert not twofactor.verify_code(secret, "000000")
+    assert twofactor.matching_step(secret, "000000") is None
 
 
 @pytest.mark.parametrize("code", ["", "   ", "abcdef", "12345", None])
 def test_junk_is_rejected_without_reaching_the_library(code):
     """Empty and non-numeric input is refused here rather than letting pyotp
     decide what an empty code means."""
-    assert not twofactor.verify_code("JBSWY3DPEHPK3PXP", code)
+    assert twofactor.matching_step("JBSWY3DPEHPK3PXP", code) is None
 
 
 def test_a_code_with_spaces_in_it_still_works():
@@ -80,13 +81,13 @@ def test_a_code_with_spaces_in_it_still_works():
     secret = twofactor.new_secret()
     spaced = code_for(secret)
 
-    assert twofactor.verify_code(secret, f"{spaced[:3]} {spaced[3:]}")
+    assert twofactor.matching_step(secret, f"{spaced[:3]} {spaced[3:]}") is not None
 
 
 def test_no_secret_means_no_code_is_ever_valid():
     """A user who never enrolled must not be verifiable by anything."""
-    assert not twofactor.verify_code(None, "000000")
-    assert not twofactor.verify_code("", "000000")
+    assert twofactor.matching_step(None, "000000") is None
+    assert twofactor.matching_step("", "000000") is None
 
 
 def test_one_step_of_clock_drift_is_tolerated():
@@ -96,7 +97,7 @@ def test_one_step_of_clock_drift_is_tolerated():
     totp = pyotp.TOTP(secret)
     previous = totp.at(dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=30))
 
-    assert twofactor.verify_code(secret, previous)
+    assert twofactor.matching_step(secret, previous) is not None
 
 
 def test_a_code_two_steps_old_is_refused():
@@ -104,7 +105,133 @@ def test_a_code_two_steps_old_is_refused():
     totp = pyotp.TOTP(secret)
     stale = totp.at(dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=90))
 
-    assert not twofactor.verify_code(secret, stale)
+    assert twofactor.matching_step(secret, stale) is None
+
+
+# --------------------------------------------------------------------------- #
+# Replay — GHSA-28h6-x798-2qv5
+#
+# A code is valid for about 90 seconds, so without a record of what was used,
+# anyone who saw one go by could use it again in that time. Frozen clocks
+# throughout: these are about which STEP a code belongs to, and a test that
+# straddled a 30-second boundary would be testing the boundary instead.
+# --------------------------------------------------------------------------- #
+
+NOW = "2026-10-03 01:00:10"
+
+
+def frozen_code(secret: str) -> str:
+    """The current code under a frozen clock. Not `code_for`: pyotp's `now()`
+    reads a naive datetime and converts it as LOCAL time, and freezegun's
+    naive now is UTC — so off a UTC machine it is a code for the wrong step."""
+    return pyotp.TOTP(secret).at(dt.datetime.now(dt.timezone.utc))
+
+
+def _user_with_secret(pf):
+    user = fac.make_user(pf, "replay@example.test")
+    user.totp_secret = twofactor.new_secret()
+    pf.flush()
+    return user
+
+
+def test_a_code_is_accepted_once(pf):
+    user = _user_with_secret(pf)
+    with freeze_time(NOW):
+        code = frozen_code(user.totp_secret)
+
+        assert twofactor.accept_code(pf, user, code)
+        assert not twofactor.accept_code(pf, user, code), "the same code was accepted twice"
+
+
+def test_an_earlier_code_is_refused_once_a_later_one_was_used(pf):
+    """The previous step's code is still inside the drift window, but anyone
+    holding it saw it before the one just used."""
+    user = _user_with_secret(pf)
+    totp = pyotp.TOTP(user.totp_secret)
+    with freeze_time(NOW):
+        now = dt.datetime.now(dt.timezone.utc)
+        assert twofactor.accept_code(pf, user, totp.at(now))
+
+        assert not twofactor.accept_code(pf, user, totp.at(now - dt.timedelta(seconds=30)))
+
+
+def test_the_next_code_is_still_accepted(pf):
+    """Refusing replays must not refuse the person: the code after the one they
+    just used works."""
+    user = _user_with_secret(pf)
+    totp = pyotp.TOTP(user.totp_secret)
+    with freeze_time(NOW):
+        now = dt.datetime.now(dt.timezone.utc)
+        assert twofactor.accept_code(pf, user, totp.at(now - dt.timedelta(seconds=30)))
+
+        assert twofactor.accept_code(pf, user, totp.at(now))
+
+
+def test_two_requests_racing_with_one_code_cannot_both_pass(session_factory):
+    """The relay case: the same code arrives twice before either request has
+    committed. Each loaded the user before the other wrote, so a read-then-write
+    check would pass both. The UPDATE's own condition is what refuses one."""
+    with session_factory() as s:
+        user = _user_with_secret(s)
+        s.commit()
+        user_id = user.id
+    with freeze_time(NOW), session_factory() as first, session_factory() as second:
+        mine = first.get(User, user_id)
+        theirs = second.get(User, user_id)
+        code = frozen_code(mine.totp_secret)
+
+        assert twofactor.accept_code(first, mine, code)
+        first.commit()
+        assert not twofactor.accept_code(second, theirs, code), "both racers got in"
+
+
+def test_a_new_secret_forgets_the_old_ones_steps(pf):
+    """A fresh enrolment's first code can share a step with the last code from
+    the old secret, and must not be refused for it."""
+    user = _user_with_secret(pf)
+    with freeze_time(NOW):
+        assert twofactor.accept_code(pf, user, frozen_code(user.totp_secret))
+        user.totp_enabled_at = dt.datetime.now(dt.timezone.utc)
+
+        twofactor.disable(pf, user)
+        assert user.totp_last_step is None
+        twofactor.begin_enrolment(user)
+
+        assert twofactor.accept_code(pf, user, frozen_code(user.totp_secret))
+
+
+def test_issuing_a_secret_starts_with_no_step_recorded(pf):
+    """Wherever the secret is replaced, the record goes with it — not only on
+    the disable path that happens to come first today."""
+    user = _user_with_secret(pf)
+    user.totp_enabled_at = dt.datetime.now(dt.timezone.utc)
+    user.totp_last_step = 99_999_999
+    old = user.totp_secret
+
+    twofactor.begin_enrolment(user)
+
+    assert user.totp_secret != old
+    assert user.totp_last_step is None
+
+
+def test_a_code_used_to_sign_in_cannot_sign_in_again(client, session_factory, enrolled):
+    """End to end, through the login form: somebody who watched the code go in
+    and also has the password still does not get a session out of it."""
+    code = code_for(enrolled)
+    client.cookies.clear()
+    login_password_only(client)
+    first = client.post("/login/code", data={"code": code, "_csrf": pre_auth_csrf(client)},
+                        headers=HTML, follow_redirects=False)
+    assert first.headers["location"] == "/"
+
+    client.cookies.clear()
+    login_password_only(client)
+    again = client.post("/login/code", data={"code": code, "_csrf": pre_auth_csrf(client)},
+                        headers=HTML, follow_redirects=False)
+
+    assert again.status_code == 200
+    assert "isn&#39;t right" in again.text or "isn't right" in again.text
+    assert client.get("/", headers=HTML, follow_redirects=False).status_code == 303
 
 
 def test_the_provisioning_uri_names_this_install(pf):

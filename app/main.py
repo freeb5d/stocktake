@@ -1179,7 +1179,7 @@ async def setup_twofactor_enable(request: Request, code: str = Form(...)):
         await auth.verify_csrf(request, db)
         # The pending secret on the row, never one posted with the form.
         secret = ctx.user.totp_secret
-        if not twofactor.verify_code(secret, code):
+        if not twofactor.accept_code(db, ctx.user, code):
             return _redirect("/setup/2fa?error=" + quote_plus(
                 "That code isn't right — check the app and try again."))
         # Does NOT reissue recovery codes: they were handed out on the previous
@@ -1686,7 +1686,7 @@ async def login_code_submit(request: Request, code: str = Form(...)):
             return _code_form(request, "Too many attempts. Try again shortly.")
 
         used_recovery = False
-        if twofactor.verify_code(user.totp_secret, code):
+        if twofactor.accept_code(db, user, code):
             ok = True
         elif pending.recovery_spent:
             # ONE recovery code per sign-in (decisions.md #45), refused
@@ -1986,7 +1986,7 @@ async def twofactor_enable(request: Request, code: str = Form(...)):
         # never scanned. The code proves the app holds it — skipping that check
         # is how people lock themselves out.
         secret = ctx.user.totp_secret
-        if not twofactor.verify_code(secret, code):
+        if not twofactor.accept_code(db, ctx.user, code):
             return _redirect("/profile/2fa?error=" + quote_plus(
                 "That code isn't right — check the app and try again."))
         codes = twofactor.enable(db, ctx.user, secret)
@@ -2330,7 +2330,7 @@ async def twofactor_disable(
             return _redirect("/profile")
         if not auth.verify_password(ctx.user.password_hash, password):
             return _redirect("/profile?error=password")
-        if not (twofactor.verify_code(ctx.user.totp_secret, code)
+        if not (twofactor.accept_code(db, ctx.user, code)
                 or twofactor.consume_recovery_code(db, ctx.user, code)):
             return _redirect("/profile?error=code")
         twofactor.disable(db, ctx.user)
