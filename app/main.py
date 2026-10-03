@@ -110,6 +110,7 @@ from .models import (
     Trade,
     User,
     UserSession,
+    currency_problem,
     exchange_problem,
     ticker_problem,
 )
@@ -4254,7 +4255,9 @@ async def trade_create(
         # to another page and losing what they typed.
         if instrument_id == "new":
             ticker = new_ticker.strip().upper()
-            problem = ticker_problem(ticker) or exchange_problem(new_exchange or "ASX")
+            typed_currency = new_currency.strip().upper()
+            problem = (ticker_problem(ticker) or exchange_problem(new_exchange or "ASX")
+                       or (typed_currency and currency_problem(typed_currency)))
             if problem:
                 return _reject(problem)
             if new_asset_class not in ("etf", "share", "crypto"):
@@ -4271,9 +4274,7 @@ async def trade_create(
                     ticker=ticker,
                     exchange=exchange,
                     name=(new_name.strip() or found.get("name") or None),
-                    currency=(
-                        new_currency.strip().upper() or found.get("currency") or "AUD"
-                    ),
+                    currency=typed_currency or _yahoo_currency(found) or "AUD",
                     asset_class=new_asset_class,
                     drp=bool(new_drp),
                     active=True,
@@ -5107,6 +5108,13 @@ def instruments_price_on(request: Request, date: str = "", instrument: int = 0,
         }
 
 
+def _yahoo_currency(found: dict) -> str | None:
+    """Yahoo's currency for a new instrument, if it is a code. A suggestion,
+    held to the same rule as typing one (decisions.md #130)."""
+    code = found.get("currency")
+    return code if code and not currency_problem(code) else None
+
+
 @app.post("/holdings/add")
 async def instruments_add(
     request: Request,
@@ -5123,7 +5131,9 @@ async def instruments_add(
         _require_write(ctx)
         ticker = ticker.strip().upper()
         exchange = exchange.strip().upper()
-        problem = ticker_problem(ticker) or exchange_problem(exchange)
+        currency = currency.strip().upper()
+        problem = (ticker_problem(ticker) or exchange_problem(exchange)
+                   or (currency and currency_problem(currency)))
         if problem:
             return _redirect(f"/holdings?error={quote_plus(problem)}")
         if asset_class not in ("etf", "share", "crypto"):
@@ -5136,13 +5146,13 @@ async def instruments_add(
         was_new = existing is None
         if existing is None:
             # Anything left blank is filled from Yahoo; what was typed wins.
-            found = pricefeed.lookup(ticker, exchange) if not (name.strip() and currency.strip()) else {}
+            found = pricefeed.lookup(ticker, exchange) if not (name.strip() and currency) else {}
             symbol = yahoo_symbol.strip() or found.get("symbol") or pricefeed.yahoo_symbol_for(ticker, exchange)
             existing = Instrument(
                 ticker=ticker,
                 exchange=exchange,
                 name=(name.strip() or found.get("name") or None),
-                currency=(currency.strip().upper() or found.get("currency") or "AUD"),
+                currency=currency or _yahoo_currency(found) or "AUD",
                 asset_class=asset_class,
                 drp=bool(drp),
                 active=True,

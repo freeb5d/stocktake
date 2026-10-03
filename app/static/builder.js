@@ -36,10 +36,13 @@
 
   // ---- rendering the panels ------------------------------------------- //
 
+  /* Everything below builds elements and sets their text. A filter value is a
+     currency or a ticker from the database, and one held markup once:
+     decisions.md #130. */
+  const options = (items) => items.map((i) => new Option(i.label, i.key));
+
   function renderGrain() {
-    $("grain").innerHTML = cat.grains
-      .map((g) => `<option value="${g.key}">${g.label}</option>`)
-      .join("");
+    $("grain").replaceChildren(...options(cat.grains));
     $("grain").value = spec.grain;
     const g = cat.grains.find((x) => x.key === spec.grain);
     $("grain-blurb").textContent = g ? g.blurb : "";
@@ -49,13 +52,9 @@
   function renderTypes() {
     const usable = cat.chart_types.filter((t) => t.grains.includes(spec.grain));
     if (!usable.some((t) => t.key === spec.type)) spec.type = usable[0].key;
-    $("type").innerHTML = usable
-      .map((t) => `<option value="${t.key}">${t.label}</option>`)
-      .join("");
+    $("type").replaceChildren(...options(usable));
     $("type").value = spec.type;
-    $("bucket").innerHTML = cat.buckets
-      .map((b) => `<option value="${b.key}">${b.label}</option>`)
-      .join("");
+    $("bucket").replaceChildren(...options(cat.buckets));
     $("bucket").value = spec.bucket;
   }
 
@@ -64,7 +63,16 @@
     li.className = "chip-field " + f.role;
     li.draggable = true;
     li.dataset.key = f.key;
-    li.innerHTML = `<span>${f.label}</span>` + (onRemove ? '<button type="button" aria-label="Remove">✕</button>' : "");
+    const name = document.createElement("span");
+    name.textContent = f.label;
+    li.append(name);
+    if (onRemove) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.setAttribute("aria-label", "Remove");
+      remove.textContent = "✕";
+      li.append(remove);
+    }
     li.addEventListener("dragstart", (e) => {
       e.dataTransfer.setData("text/plain", f.key);
       li.classList.add("dragging");
@@ -125,13 +133,20 @@
       const box = document.createElement("div");
       box.className = "filtergroup";
       const f = cat.fields.find((x) => x.key === key);
-      box.innerHTML = `<span class="sub">${f ? f.label : key}</span>`;
+      const head = document.createElement("span");
+      head.className = "sub";
+      head.textContent = f ? f.label : key;
+      box.append(head);
       values.forEach((v) => {
         const id = `f-${key}-${v}`.replace(/\W/g, "-");
         const label = document.createElement("label");
         label.className = "check";
-        label.innerHTML = `<input type="checkbox" id="${id}" ${chosen.has(v) ? "checked" : ""}> ${v}`;
-        label.querySelector("input").addEventListener("change", (e) => {
+        const tick = document.createElement("input");
+        tick.type = "checkbox";
+        tick.id = id;
+        tick.checked = chosen.has(v);
+        label.append(tick, " " + v);
+        tick.addEventListener("change", (e) => {
           const set = new Set(spec.filters[key] || []);
           e.target.checked ? set.add(v) : set.delete(v);
           spec.filters[key] = [...set];

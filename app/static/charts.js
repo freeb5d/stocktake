@@ -32,7 +32,13 @@
   }
 
   const money = (v) => "$" + Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
-  const moneyHtml = (v) => '<span class="m">' + money(v) + "</span>";
+  // A table cell is text unless it says it is markup, and only this says so:
+  // labels are tickers, currencies and series names from the data, and a
+  // currency once held markup (decisions.md #130).
+  const moneyHtml = (v) => ({ html: '<span class="m">' + money(v) + "</span>" });
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const cell = (c) => (c !== null && typeof c === "object" ? c.html : esc(c));
   const hidden = () => document.body.classList.contains("hide-values");
   const pct = (v) => (v * 100).toFixed(2) + "%";
   const charts = [];
@@ -138,8 +144,8 @@
   function table(id, header, rows) {
     const el = document.getElementById(id);
     if (!el) return;
-    const h = "<tr>" + header.map((c) => "<th>" + c + "</th>").join("") + "</tr>";
-    const b = rows.map((r) => "<tr>" + r.map((c) => "<td>" + c + "</td>").join("") + "</tr>").join("");
+    const h = "<tr>" + header.map((c) => "<th>" + esc(c) + "</th>").join("") + "</tr>";
+    const b = rows.map((r) => "<tr>" + r.map((c) => "<td>" + cell(c) + "</td>").join("") + "</tr>").join("");
     el.innerHTML = "<div class='tablewrap'><table><thead>" + h + "</thead><tbody>" + b + "</tbody></table></div>";
   }
 

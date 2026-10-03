@@ -20,6 +20,7 @@ from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from . import (
@@ -37,7 +38,8 @@ from . import (
     statements,
     tenancy,
 )
-from .models import Dividend, Instrument, Trade
+from .models import Dividend, Instrument, Trade, currency_problem
+from .settings import BrokerFormat
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -709,6 +711,8 @@ async def broker_designer(request: Request, file: UploadFile = None,
     handler because they render the same page, and two would drift.
     """
     templates, settings, _factory = _ctx(request)
+    currency = currency.strip().upper()
+    currency_error = currency_problem(currency)
     if file is not None and file.filename:
         text = (await _read_capped(file, settings)).decode("utf-8-sig", errors="replace")
 
@@ -751,7 +755,9 @@ async def broker_designer(request: Request, file: UploadFile = None,
             date_format = brokerdesign.guess_date_format(dates) or "%d/%m/%Y"
 
         result = None
-        if read.rows and not first_pass:
+        if read.rows and not first_pass and currency_error:
+            result = brokercsv.ParseResult(errors=[currency_error])
+        elif read.rows and not first_pass:
             result = brokerdesign.preview(text, exchange=exchange, currency=currency,
                                           date_format=date_format, columns=chosen)
 
@@ -786,7 +792,8 @@ async def broker_designer(request: Request, file: UploadFile = None,
                 "drp_skipped": brokerdesign.drp_skipped(result.skipped) if result else 0,
                 "actions": actions,
                 "result": result,
-                "yaml": brokerdesign.broker_yaml(
+                # Nothing to install or contribute while the currency is wrong.
+                "yaml": "" if currency_error else brokerdesign.broker_yaml(
                     name=name or "My broker", exchange=exchange, currency=currency,
                     date_format=date_format, columns=chosen, actions=actions),
             },
@@ -864,6 +871,12 @@ def _validate(kind: str, body: bytes) -> str | None:
                 loaded = docformats.load_broker_formats(extra_dir=Path(tmp))
                 if "probe" not in loaded:
                     return "That is not a broker format — it needs a `kind`."
+                # The model every import uses, so what installs is what loads.
+                try:
+                    BrokerFormat(**loaded["probe"])
+                except ValidationError as exc:
+                    first = exc.errors()[0]
+                    return str(first.get("ctx", {}).get("error") or first["msg"])
         except Exception as exc:  # noqa: BLE001 - yaml and template errors vary
             return f"{type(exc).__name__}: {exc}".replace(str(probe), "the file")
     return None

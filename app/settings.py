@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from appcore.config import BaseAppSettings
+
+log = logging.getLogger(__name__)
 
 # Where the portfolio lives. Every date decision is made in this zone (see
 # app/clock.py), and the price feed schedules against it. Australian by default
@@ -185,6 +188,18 @@ class BrokerFormat(BaseModel):
     # conversion applied to times that never needed it moves them by hours.
     times_zone: str = ""
 
+    @field_validator("currency")
+    @classmethod
+    def _currency_is_a_code(cls, value: str) -> str:
+        """Upper-cased, then held to the forms' rule: this code lands on every
+        instrument an import creates (decisions.md #130)."""
+        from .models import CURRENCY_RULE, currency_problem
+
+        code = value.strip().upper()
+        if currency_problem(code):
+            raise ValueError(CURRENCY_RULE)
+        return code
+
 
 class OcrSettings(BaseModel):
     """Reading statements that arrive as scans.
@@ -249,7 +264,15 @@ class ImportSettings(BaseModel):
 
         merged = docformats.load_broker_formats(extra_dir=self.user_dir("broker"))
         merged.update({k: v.model_dump() for k, v in self.brokers.items()})
-        return {k: BrokerFormat(**v) for k, v in merged.items()}
+        # One bad file is skipped, not fatal to the imports page — as
+        # `load_broker_formats` already does for a file that is not YAML.
+        formats = {}
+        for key, raw in merged.items():
+            try:
+                formats[key] = BrokerFormat(**raw)
+            except ValidationError as exc:
+                log.warning("ignoring broker format %s: %s", key, exc)
+        return formats
 
 
 class FeatureSettings(BaseModel):

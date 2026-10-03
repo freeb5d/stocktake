@@ -175,13 +175,16 @@
       '<span class="rotpos" aria-hidden="true"></span>' +
       '<span class="rotname"></span>' +
       '<span class="rotacts">' +
-      '<button type="button" data-move="up" aria-label="Move ' + ticker + ' earlier">↑</button>' +
-      '<button type="button" data-move="down" aria-label="Move ' + ticker + ' later">↓</button>' +
-      '<button type="button" data-remove aria-label="Remove ' + ticker + ' from the rotation">×</button>' +
+      '<button type="button" data-move="up">↑</button>' +
+      '<button type="button" data-move="down">↓</button>' +
+      '<button type="button" data-remove>×</button>' +
       "</span>";
-    // textContent, not innerHTML: a ticker is user data and reaches this from
-    // the database.
+    // The ticker goes in as text and attributes, never markup: it is user data
+    // and reaches this from the database and from the box being typed in.
     li.querySelector(".rotname").textContent = ticker;
+    li.querySelector("[data-move=up]").setAttribute("aria-label", "Move " + ticker + " earlier");
+    li.querySelector("[data-move=down]").setAttribute("aria-label", "Move " + ticker + " later");
+    li.querySelector("[data-remove]").setAttribute("aria-label", "Remove " + ticker + " from the rotation");
     return li;
   }
 

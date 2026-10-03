@@ -1132,3 +1132,22 @@ generated notes and the `docker pull` line. A hand-written release carries
 whatever its author put in it, so include the `docker pull` line there. The
 lookup failing stops the job, because reading a failure as "no release" is
 the overwrite again.
+
+**130. A currency is a three-letter code, and the pages treat data as text.**
+GHSA-g75f-hwjq-whr6. An instrument's currency was free text in three places
+(adding a holding, the trade form's new instrument, the broker designer) and
+only upper-cased, and SQLite does not enforce `String(3)`. The chart builder's
+filters and the chart tables built HTML from strings, and the CSP allows inline
+handlers, so markup typed as a currency ran for whoever opened a chart next.
+Instruments are shared by every portfolio on an instance, which made that any
+writer's script in anybody's session.
+
+Two fixes, because either alone leaves a gap. The way in: `currency_problem`
+at each route, a `BrokerFormat` validator for formats from config, templates
+and the designer, Yahoo's suggestion held to the same rule, and a model
+validator under all of them that refuses rather than normalises. The way out:
+the builder, the chart tables and the rotation editor build elements and set
+text, and a table cell is markup only when `charts.js` made it so. The second
+half is what protects an install that already stored a bad value. A bad
+broker format already installed is skipped with a warning rather than taking
+the imports page down.

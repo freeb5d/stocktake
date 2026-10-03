@@ -33,7 +33,7 @@ from sqlalchemy import (
     false,
     true,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from appcore import Base, JSONType
 
@@ -43,6 +43,10 @@ from appcore import Base, JSONType
 # both backends behave the same and gives a readable message either way.
 TICKER_PATTERN = _re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,11}$")
 EXCHANGE_PATTERN = _re.compile(r"^[A-Z][A-Z0-9.\-]{0,11}$")
+# A currency is shown inside chart markup, so it is a code and nothing else.
+# Free text here was stored XSS shared by every portfolio: decisions.md #130.
+CURRENCY_PATTERN = _re.compile(r"^[A-Z]{3}$")
+CURRENCY_RULE = "A currency is a three-letter code, like AUD or USD."
 
 
 def ticker_problem(ticker: str) -> str | None:
@@ -61,6 +65,12 @@ def exchange_problem(exchange: str) -> str | None:
         return "Enter an exchange."
     if not EXCHANGE_PATTERN.match(exchange):
         return ("An exchange is up to 12 characters, starting with a letter.")
+    return None
+
+
+def currency_problem(currency: str) -> str | None:
+    if not CURRENCY_PATTERN.match((currency or "").strip().upper()):
+        return CURRENCY_RULE
     return None
 
 
@@ -669,6 +679,14 @@ class Instrument(Base):
     dividends: Mapped[list[Dividend]] = relationship(back_populates="instrument")
 
     __table_args__ = (UniqueConstraint("exchange", "ticker"),)
+
+    @validates("currency")
+    def _currency_is_a_code(self, _key: str, value: str) -> str:
+        """The backstop under every route: one that forgets to check still
+        cannot store markup. Strict, not normalising — the routes upper-case."""
+        if not CURRENCY_PATTERN.match(value or ""):
+            raise ValueError(CURRENCY_RULE)
+        return value
 
 
 class HoldingPref(Base):
